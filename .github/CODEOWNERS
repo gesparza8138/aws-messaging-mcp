@@ -1,0 +1,3 @@
+# Review routing; enforced if require_code_owner_review is enabled later.
+/infra/ @gesparza8138
+/src/aws_messaging_mcp/auth/ @gesparza8138

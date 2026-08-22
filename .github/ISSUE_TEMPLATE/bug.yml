@@ -1,0 +1,24 @@
+name: Bug report
+description: Something misbehaves
+labels: []
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: Include the tool call, the response, and any request ID.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+  - type: input
+    id: stage
+    attributes:
+      label: Stage
+      placeholder: dev / prod / local
+    validations:
+      required: true

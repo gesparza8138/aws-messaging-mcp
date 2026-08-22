@@ -1,0 +1,34 @@
+name: docs
+
+# Carries the required "docs" status check, so it must run on every PR -
+# do not add path filters (a filtered-out required check blocks merging).
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docs-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  docs:
+    name: docs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+      - name: markdownlint
+        run: npx --yes markdownlint-cli2@0.18.1 "**/*.md"
+      - name: lychee (relative links, offline)
+        # Offline mode checks every relative link and file reference in the
+        # repo deterministically; external-URL checking is deferred (flaky in
+        # CI due to rate limits) and revisited in M5 hardening.
+        run: |
+          docker run --rm -v "$PWD:/input" -w /input lycheeverse/lychee:lychee-v0.24.2 \
+            --offline --no-progress --root-dir /input "./**/*.md"
