@@ -1,0 +1,117 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    name: quality
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6
+        with:
+          enable-cache: true
+      - run: uv sync --locked
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
+      - run: uv run mypy
+      - run: uv run pre-commit run --all-files --show-diff-on-failure
+
+  unit-tests:
+    name: unit-tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6
+        with:
+          enable-cache: true
+      - run: uv sync --locked
+      - run: uv run pytest tests/unit --cov --cov-report=term-missing
+
+  security-scans:
+    name: security-scans
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          fetch-depth: 0 # gitleaks scans commit history
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6
+        with:
+          enable-cache: true
+      - run: uv sync --locked
+      - name: bandit
+        run: uv run bandit -ll -r src
+      - name: pip-audit against uv.lock
+        run: |
+          uv export --format requirements-txt --no-emit-project --output-file requirements-audit.txt
+          uvx pip-audit --strict --requirement requirements-audit.txt
+      - name: gitleaks
+        uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: dependency-review
+        if: github.event_name == 'pull_request'
+        # Needs GitHub Advanced Security on private repos; pip-audit and
+        # Dependabot are the blocking CVE gates, so this one is advisory.
+        continue-on-error: true
+        uses: actions/dependency-review-action@2031cfc080254a8a887f58cffee85186f0e49e48 # v4
+
+  iac-scans:
+    name: iac-scans
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6
+        with:
+          enable-cache: true
+      - id: templates
+        name: find templates
+        run: echo "count=$(find infra -name '*.yaml' -o -name '*.yml' | wc -l | tr -d ' ')" >> "$GITHUB_OUTPUT"
+      - if: steps.templates.outputs.count == '0'
+        run: echo "No CloudFormation templates in infra/ yet - nothing to scan."
+      - if: steps.templates.outputs.count != '0'
+        name: cfn-lint
+        run: |
+          uv sync --locked
+          find infra -name '*.yaml' -print0 | xargs -0 uv run cfn-lint
+      - if: steps.templates.outputs.count != '0'
+        name: checkov
+        run: uvx checkov --directory infra --framework cloudformation --compact
+      - if: steps.templates.outputs.count != '0'
+        name: cfn_nag
+        run: |
+          sudo gem install cfn-nag --no-document
+          cfn_nag_scan --input-path infra --template-pattern '\.yaml$'
+
+  commitlint:
+    name: commitlint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+      - run: npm install --no-save @commitlint/cli@19 @commitlint/config-conventional@19
+      - name: lint PR title (becomes the squash commit on main)
+        if: github.event_name == 'pull_request'
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+        run: printf '%s\n' "$TITLE" | npx commitlint --verbose
+      - name: lint PR commits
+        if: github.event_name == 'pull_request'
+        run: npx commitlint --from ${{ github.event.pull_request.base.sha }} --to ${{ github.event.pull_request.head.sha }} --verbose
+      - name: lint pushed commit
+        if: github.event_name == 'push'
+        run: npx commitlint --last --verbose

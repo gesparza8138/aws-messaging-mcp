@@ -1,0 +1,68 @@
+[project]
+name = "aws-messaging-mcp"
+version = "0.1.0"
+description = "Serverless MCP server for SES email, SMS/MMS/RCS, and CloudFront-signed file sharing"
+readme = "README.md"
+requires-python = ">=3.13"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Gabriel Esparza", email = "esparza.gabriel@gmail.com" }]
+dependencies = [
+    # SendRcsMessage and the other EUM v2 RCS operations first appear in 1.43.37.
+    "boto3>=1.43.37",
+]
+
+[dependency-groups]
+dev = [
+    "bandit>=1.8",
+    "cfn-lint>=1.38",
+    "mypy>=1.17",
+    "pre-commit>=4.2",
+    "pytest>=8.4",
+    "pytest-cov>=6.2",
+    "ruff>=0.12",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/aws_messaging_mcp"]
+
+[tool.ruff]
+target-version = "py313"
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "I", "N", "UP", "B", "C4", "SIM", "RUF", "D"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["D1"]
+
+[tool.mypy]
+strict = true
+python_version = "3.13"
+files = ["src", "tests"]
+mypy_path = "src"
+warn_unreachable = true
+pretty = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+markers = [
+    "e2e: tests that run against a deployed dev stack (require credentials)",
+]
+
+[tool.coverage.run]
+source = ["aws_messaging_mcp"]
+branch = true
+
+[tool.coverage.report]
+fail_under = 90
+show_missing = true

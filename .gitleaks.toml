@@ -1,0 +1,6 @@
+# Gitleaks configuration. Default rules apply; add narrowly-scoped allowlist
+# entries here (with a justification) when a documented example value trips a
+# rule. Never allowlist a whole file to silence a real finding.
+
+[extend]
+useDefault = true

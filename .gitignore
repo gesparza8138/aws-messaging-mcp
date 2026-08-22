@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+.python-version.local
+
+# Tooling caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+requirements-audit.txt
+
+# Node (commitlint / markdownlint run via npx)
+node_modules/
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+
+# Local environment
+.env
+.env.*

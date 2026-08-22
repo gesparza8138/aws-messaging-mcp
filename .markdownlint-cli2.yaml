@@ -1,0 +1,8 @@
+config:
+  # Long lines are fine; tables and links make MD013 pure noise.
+  MD013: false
+  # Inline HTML is needed for <br/> in Mermaid-adjacent tables.
+  MD033: false
+ignores:
+  - ".venv/**"
+  - "node_modules/**"
