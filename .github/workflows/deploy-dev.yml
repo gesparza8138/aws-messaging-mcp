@@ -117,3 +117,52 @@ jobs:
       - name: discard unexecuted change set
         if: ${{ !inputs.execute }}
         run: echo "Change set left pending; re-run with execute=true to apply, or delete it in the console." >> "$GITHUB_STEP_SUMMARY"
+
+  e2e:
+    name: e2e-dev
+    needs: deploy
+    if: ${{ inputs.execute }}
+    runs-on: ubuntu-latest
+    environment: dev
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+      - uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: admit runner ip to the edge allow-list
+        run: ./scripts/e2e-allowlist.sh add
+
+      - name: run e2e suite
+        run: |
+          OUT=$(aws cloudformation describe-stacks --stack-name aws-messaging-mcp-dev \
+            --query 'Stacks[0].Outputs' --output json)
+          get() { echo "$OUT" | jq -r ".[] | select(.OutputKey==\"$1\").OutputValue"; }
+          E2E_BASE_URL=$(get McpUrl | sed 's|/mcp/$||')
+          E2E_TOKEN_URL="$(get HostedUiUrl)/oauth2/token"
+          E2E_CLIENT_ID=$(aws ssm get-parameter --name /messaging-mcp/dev/ci-client-id \
+            --query Parameter.Value --output text)
+          E2E_CLIENT_SECRET=$(aws ssm get-parameter --name /messaging-mcp/dev/ci-client-secret \
+            --with-decryption --query Parameter.Value --output text)
+          param() { jq -r ".[] | select(startswith(\"$1=\"))" infra/params/dev.json | cut -d= -f2-; }
+          E2E_SENDER=$(param SesSenderAddresses | cut -d, -f1)
+          E2E_RECIPIENT=$(param RecipientAllowList | cut -d, -f1)
+          export E2E_BASE_URL E2E_TOKEN_URL E2E_CLIENT_ID E2E_CLIENT_SECRET E2E_SENDER E2E_RECIPIENT
+          export E2E_CONFIG_SET=aws-messaging-mcp-dev
+          export E2E_EVENTS_LOG_GROUP=/aws-messaging-mcp/dev/ses-events
+          # The republished edge function propagates in seconds, but poll
+          # rather than assume: healthz goes through the allow-list too.
+          for _ in $(seq 1 24); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' "$E2E_BASE_URL/healthz")
+            [ "$code" = "200" ] && break
+            sleep 5
+          done
+          go test -tags e2e -count=1 -v ./e2e/
+
+      - name: withdraw runner ip
+        if: always()
+        run: ./scripts/e2e-allowlist.sh remove
