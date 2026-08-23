@@ -1,11 +1,11 @@
 .PHONY: dev test lint typecheck iac-lint e2e deploy-dev
 
 dev:
-	@echo "The local server arrives with M1 (PR-3). Until then there is nothing to run."
-	@exit 1
+	uv run uvicorn aws_messaging_mcp.main:dev_app --factory --port 8000 --reload
 
 test:
-	uv run pytest tests/unit --cov --cov-report=term-missing
+	uv run pytest tests/unit tests/integration --cov --cov-report=term-missing --cov-report=json
+	uv run python scripts/check_coverage.py coverage.json --require-100 src/aws_messaging_mcp/auth
 
 lint:
 	uv run ruff check .
