@@ -76,6 +76,22 @@ type Settings struct {
 	EmailMaxRawBytes int
 	// RateLimitTable is the DynamoDB counters table name.
 	RateLimitTable string
+	// EUMConfigurationSet is injected into every SMS/MMS send.
+	EUMConfigurationSet string
+	// OriginationIdentity is the server's toll-free number (E.164); the only
+	// origination the tools accept (PRD S1).
+	OriginationIdentity string
+	// ProtectConfigurationID is injected into every SMS/MMS send.
+	ProtectConfigurationID string
+	// SMSMaxPrice is the per-message USD ceiling (PRD §8).
+	SMSMaxPrice string
+	// MediaBucket holds MMS media; MediaUrls must point inside it.
+	MediaBucket string
+	// EUMEventsLogGroup is the stage's EUM event trail, read by
+	// sms_get_message_status.
+	EUMEventsLogGroup string
+	// MediaMaxBytes caps the decoded size of an inline MediaUpload.
+	MediaMaxBytes int
 }
 
 // JWKSURL returns the Cognito JWKS endpoint for the configured issuer.
@@ -96,29 +112,36 @@ func FromEnv(lookup Lookup) Settings {
 	}
 	resourceURL := get("MCP_RESOURCE_URL", defaultResourceURL)
 	return Settings{
-		Stage:               get("STAGE", defaultStage),
-		AWSRegion:           get("AWS_REGION", defaultRegion),
-		MCPResourceURL:      resourceURL,
-		PublicBaseURL:       get("PUBLIC_BASE_URL", baseOf(resourceURL)),
-		CognitoIssuer:       get("COGNITO_ISSUER", ""),
-		CognitoDomain:       get("COGNITO_DOMAIN", ""),
-		AllowedClientIDs:    splitCSV(get("ALLOWED_CLIENT_IDS", "")),
-		AuthMetadataMode:    get("AUTH_METADATA_MODE", "direct"),
-		RequireOriginSecret: strings.EqualFold(get("REQUIRE_ORIGIN_SECRET", "false"), "true"),
-		OriginSecret:        get("ORIGIN_SECRET", ""),
-		BreakGlassEnabled:   strings.EqualFold(get("BREAK_GLASS_ENABLED", "false"), "true"),
-		BreakGlassSHA256:    get("BREAK_GLASS_SHA256", ""),
-		BreakGlassScopes:    splitCSV(get("BREAK_GLASS_SCOPES", "msg/read")),
-		SESConfigurationSet: get("SES_CONFIGURATION_SET", ""),
-		SESReplyTo:          get("SES_REPLY_TO", ""),
-		OptInPhoneNumber:    get("OPT_IN_PHONE_NUMBER", ""),
-		SESSenderAddresses:  splitCSV(get("SES_SENDER_ADDRESSES", "")),
-		RecipientAllowList:  splitCSV(get("RECIPIENT_ALLOW_LIST", "")),
-		MaxRecipients:       intOr(get("MAX_RECIPIENTS", ""), 10),
-		RateLimitPerHour:    intOr(get("RATE_LIMIT_PER_HOUR", ""), 20),
-		RateLimitPerDay:     intOr(get("RATE_LIMIT_PER_DAY", ""), 300),
-		EmailMaxRawBytes:    intOr(get("EMAIL_MAX_RAW_BYTES", ""), 10*1024*1024),
-		RateLimitTable:      get("RATE_LIMIT_TABLE", ""),
+		Stage:                  get("STAGE", defaultStage),
+		AWSRegion:              get("AWS_REGION", defaultRegion),
+		MCPResourceURL:         resourceURL,
+		PublicBaseURL:          get("PUBLIC_BASE_URL", baseOf(resourceURL)),
+		CognitoIssuer:          get("COGNITO_ISSUER", ""),
+		CognitoDomain:          get("COGNITO_DOMAIN", ""),
+		AllowedClientIDs:       splitCSV(get("ALLOWED_CLIENT_IDS", "")),
+		AuthMetadataMode:       get("AUTH_METADATA_MODE", "direct"),
+		RequireOriginSecret:    strings.EqualFold(get("REQUIRE_ORIGIN_SECRET", "false"), "true"),
+		OriginSecret:           get("ORIGIN_SECRET", ""),
+		BreakGlassEnabled:      strings.EqualFold(get("BREAK_GLASS_ENABLED", "false"), "true"),
+		BreakGlassSHA256:       get("BREAK_GLASS_SHA256", ""),
+		BreakGlassScopes:       splitCSV(get("BREAK_GLASS_SCOPES", "msg/read")),
+		SESConfigurationSet:    get("SES_CONFIGURATION_SET", ""),
+		SESReplyTo:             get("SES_REPLY_TO", ""),
+		OptInPhoneNumber:       get("OPT_IN_PHONE_NUMBER", ""),
+		SESSenderAddresses:     splitCSV(get("SES_SENDER_ADDRESSES", "")),
+		RecipientAllowList:     splitCSV(get("RECIPIENT_ALLOW_LIST", "")),
+		MaxRecipients:          intOr(get("MAX_RECIPIENTS", ""), 10),
+		RateLimitPerHour:       intOr(get("RATE_LIMIT_PER_HOUR", ""), 20),
+		RateLimitPerDay:        intOr(get("RATE_LIMIT_PER_DAY", ""), 300),
+		EmailMaxRawBytes:       intOr(get("EMAIL_MAX_RAW_BYTES", ""), 10*1024*1024),
+		EUMConfigurationSet:    get("EUM_CONFIGURATION_SET", ""),
+		OriginationIdentity:    get("ORIGINATION_IDENTITY", ""),
+		ProtectConfigurationID: get("PROTECT_CONFIGURATION_ID", ""),
+		SMSMaxPrice:            get("SMS_MAX_PRICE", "0.05"),
+		MediaBucket:            get("MEDIA_BUCKET", ""),
+		EUMEventsLogGroup:      get("EUM_EVENTS_LOG_GROUP", ""),
+		MediaMaxBytes:          intOr(get("MEDIA_MAX_BYTES", ""), 5*1024*1024),
+		RateLimitTable:         get("RATE_LIMIT_TABLE", ""),
 	}
 }
 

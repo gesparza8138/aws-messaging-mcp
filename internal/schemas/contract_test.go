@@ -8,16 +8,23 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/aws/aws-sdk-go-v2/service/pinpointsmsvoicev2"
 	"github.com/aws/aws-sdk-go-v2/service/sesv2"
 	sestypes "github.com/aws/aws-sdk-go-v2/service/sesv2/types"
 )
 
-// serverInjected are SendEmail members the server owns (PRD 5.1 rule 2);
-// they must exist on the SDK struct even though callers cannot set them.
+// serverInjected are send-tool members the server owns (PRD 5.1 rule 2);
+// they must exist on the SDK structs even though callers cannot set them.
 var serverInjected = []string{"ConfigurationSetName"}
 
-// toolOnly are schema fields with no SDK counterpart by design.
-var toolOnly = map[string]bool{"DryRun": true}
+// eumServerInjected is the EUM equivalent (PRD 5.3).
+var eumServerInjected = []string{"ConfigurationSetName", "ProtectConfigurationId", "DryRun"}
+
+// toolOnly are schema fields with no SDK counterpart by design. DryRun keeps
+// the M2 server-side semantics on every send tool (the EUM APIs have their
+// own DryRun field, but it is server-controlled — plan M3-2); MediaUpload is
+// the inline-attachment convenience.
+var toolOnly = map[string]bool{"DryRun": true, "MediaUpload": true}
 
 func assertFieldsExist(t *testing.T, schema, sdk reflect.Type) {
 	t.Helper()
@@ -42,10 +49,13 @@ func assertFieldsExist(t *testing.T, schema, sdk reflect.Type) {
 }
 
 // sdkName maps schema field names to SDK field names where Go's initialism
-// conventions differ from ours.
+// conventions differ from the SDK's (the JSON tags carry the wire names).
 func sdkName(name string) string {
-	if name == "HTML" {
+	switch name {
+	case "HTML":
 		return "Html"
+	case "PhoneNumberIDs":
+		return "PhoneNumberIds"
 	}
 	return name
 }
@@ -79,6 +89,30 @@ func TestSendEmailSchemaMatchesSDK(t *testing.T) {
 
 func TestListIdentitiesSchemaMatchesSDK(t *testing.T) {
 	assertFieldsExist(t, reflect.TypeOf(ListEmailIdentitiesInput{}), reflect.TypeOf(sesv2.ListEmailIdentitiesInput{}))
+}
+
+func TestSendTextMessageSchemaMatchesSDK(t *testing.T) {
+	sdk := reflect.TypeOf(pinpointsmsvoicev2.SendTextMessageInput{})
+	assertFieldsExist(t, reflect.TypeOf(SendTextMessageInput{}), sdk)
+	for _, name := range eumServerInjected {
+		if _, ok := sdk.FieldByName(name); !ok {
+			t.Errorf("server-controlled field %s no longer exists on the SDK input", name)
+		}
+	}
+}
+
+func TestSendMediaMessageSchemaMatchesSDK(t *testing.T) {
+	sdk := reflect.TypeOf(pinpointsmsvoicev2.SendMediaMessageInput{})
+	assertFieldsExist(t, reflect.TypeOf(SendMediaMessageInput{}), sdk)
+	for _, name := range eumServerInjected {
+		if _, ok := sdk.FieldByName(name); !ok {
+			t.Errorf("server-controlled field %s no longer exists on the SDK input", name)
+		}
+	}
+}
+
+func TestDescribePhoneNumbersSchemaMatchesSDK(t *testing.T) {
+	assertFieldsExist(t, reflect.TypeOf(DescribePhoneNumbersInput{}), reflect.TypeOf(pinpointsmsvoicev2.DescribePhoneNumbersInput{}))
 }
 
 func TestDestinationAll(t *testing.T) {
