@@ -1,0 +1,315 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  aws-messaging-mcp bootstrap: GitHub OIDC provider, per-stage deploy roles,
+  CloudFormation service role, and the immutable artifact bucket. Deployed
+  once, manually, from the owner's workstation (the only deploy that ever
+  uses human AWS credentials).
+
+Parameters:
+  GitHubOwner:
+    Type: String
+    Default: gesparza8138
+    Description: GitHub account that owns the repository.
+  GitHubRepo:
+    Type: String
+    Default: aws-messaging-mcp
+    Description: Repository name.
+
+Resources:
+  GitHubOIDCProvider:
+    Type: AWS::IAM::OIDCProvider
+    Properties:
+      Url: https://token.actions.githubusercontent.com
+      ClientIdList:
+        - sts.amazonaws.com
+      # AWS validates GitHub's certificate chain directly; thumbprints are
+      # required by the resource type but no longer used for trust.
+      ThumbprintList:
+        - 6938fd4d98bab03faadb97b34396831e3780aea1
+        - 1c58a3a8518e8759bf075b76b750d4f2df264fcd
+
+  ArtifactBucket:
+    Type: AWS::S3::Bucket
+    Metadata:
+      checkov:
+        skip:
+          - id: CKV_AWS_18
+            comment: Access logging adds a second bucket for a private, single-writer artifact store; deferred.
+      cfn_nag:
+        rules_to_suppress:
+          - id: W35
+            reason: Access logging deferred; bucket is private, versioned, and written only by CI.
+    Properties:
+      BucketName: !Sub aws-messaging-mcp-artifacts-${AWS::AccountId}
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      VersioningConfiguration:
+        Status: Enabled
+      LifecycleConfiguration:
+        Rules:
+          # PRD 10.3: artifacts are immutable and retained 90 days.
+          - Id: expire-old-artifacts
+            Status: Enabled
+            ExpirationInDays: 90
+            NoncurrentVersionExpiration:
+              NoncurrentDays: 7
+          - Id: abort-incomplete-multipart
+            Status: Enabled
+            AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 1
+
+  ArtifactBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref ArtifactBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: "*"
+            Action: "s3:*"
+            Resource:
+              - !GetAtt ArtifactBucket.Arn
+              - !Sub ${ArtifactBucket.Arn}/*
+            Condition:
+              Bool:
+                aws:SecureTransport: "false"
+
+  # Role assumed by the CloudFormation service during app-stack deploys.
+  # The GitHub deploy roles may only pass this role to CloudFormation, so
+  # resource-level permissions live here, not on the CI identity.
+  CfnServiceRole:
+    Type: AWS::IAM::Role
+    Metadata:
+      checkov:
+        skip:
+          - id: CKV_AWS_107
+            comment: CloudFormation service role provisioning the app stack. Mutating IAM is name-scoped to aws-messaging-mcp-*, PassRole is service-conditioned, and CI identities can only pass this role to CloudFormation for the named stacks.
+          - id: CKV_AWS_108
+            comment: Same justification - service role for stack deploys, not a CI or runtime identity.
+          - id: CKV_AWS_109
+            comment: Same justification - IAM management constrained to the aws-messaging-mcp-* name prefix.
+          - id: CKV_AWS_110
+            comment: Same justification - role creation is inherent to deploying the app stack execution role.
+          - id: CKV_AWS_111
+            comment: Same justification - service wildcards are limited to the resource types the app stack owns.
+      cfn_nag:
+        rules_to_suppress:
+          - id: W11
+            reason: CloudFormation must read/describe many resource types during deploys; mutating actions are name-scoped below.
+          - id: F3
+            reason: Service role for stack deploys; wildcard read/describe actions are required by CloudFormation drift and rollback.
+    Properties:
+      RoleName: aws-messaging-mcp-cfn-service
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: cloudformation.amazonaws.com
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+      Policies:
+        - PolicyName: deploy-app-stack-resources
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: StackResourceServices
+                Effect: Allow
+                Action:
+                  - cognito-idp:*
+                  - lambda:*
+                  - cloudfront:*
+                  - route53:*
+                  - dynamodb:*
+                  - ssm:*
+                  - logs:*
+                  - scheduler:*
+                  - ses:*
+                  - sms-voice:*
+                  - budgets:*
+                  - cloudwatch:*
+                  - sns:*
+                  - xray:*
+                Resource: "*"
+              - Sid: AppStackBuckets
+                Effect: Allow
+                Action: s3:*
+                Resource:
+                  - !Sub arn:${AWS::Partition}:s3:::aws-messaging-mcp-*
+                  - !Sub arn:${AWS::Partition}:s3:::aws-messaging-mcp-*/*
+              - Sid: ReadArtifacts
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                Resource: !Sub ${ArtifactBucket.Arn}/*
+              - Sid: ManageAppRoles
+                Effect: Allow
+                Action:
+                  - iam:CreateRole
+                  - iam:DeleteRole
+                  - iam:GetRole
+                  - iam:UpdateRole
+                  - iam:PutRolePolicy
+                  - iam:DeleteRolePolicy
+                  - iam:GetRolePolicy
+                  - iam:AttachRolePolicy
+                  - iam:DetachRolePolicy
+                  - iam:TagRole
+                  - iam:UntagRole
+                  - iam:UpdateAssumeRolePolicy
+                Resource:
+                  - !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/aws-messaging-mcp-*
+              - Sid: PassAppRolesToServices
+                Effect: Allow
+                Action: iam:PassRole
+                Resource:
+                  - !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/aws-messaging-mcp-*
+                Condition:
+                  StringEquals:
+                    iam:PassedToService:
+                      - lambda.amazonaws.com
+                      - scheduler.amazonaws.com
+
+  DeployRoleDev:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: aws-messaging-mcp-deploy-dev
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !Ref GitHubOIDCProvider
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+                token.actions.githubusercontent.com:sub: !Sub repo:${GitHubOwner}/${GitHubRepo}:environment:dev
+      Policies:
+        - PolicyName: deploy-dev
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: ManageDevStack
+                Effect: Allow
+                Action:
+                  - cloudformation:CreateChangeSet
+                  - cloudformation:ExecuteChangeSet
+                  - cloudformation:DeleteChangeSet
+                  - cloudformation:DescribeChangeSet
+                  - cloudformation:DescribeStacks
+                  - cloudformation:DescribeStackEvents
+                  - cloudformation:GetTemplate
+                  - cloudformation:GetTemplateSummary
+                  - cloudformation:ListChangeSets
+                Resource:
+                  - !Sub arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/aws-messaging-mcp-dev/*
+              - Sid: ValidateTemplates
+                Effect: Allow
+                Action: cloudformation:ValidateTemplate
+                Resource: "*"
+              - Sid: PassCfnServiceRole
+                Effect: Allow
+                Action: iam:PassRole
+                Resource: !GetAtt CfnServiceRole.Arn
+                Condition:
+                  StringEquals:
+                    iam:PassedToService: cloudformation.amazonaws.com
+              - Sid: WriteArtifacts
+                Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:GetObject
+                  - s3:ListBucket
+                Resource:
+                  - !GetAtt ArtifactBucket.Arn
+                  - !Sub ${ArtifactBucket.Arn}/*
+              - Sid: UpdateWafIpSetForE2e
+                # R7/F7: the e2e job may temporarily add the runner's egress
+                # IP to the allow-list for the duration of a test run.
+                Effect: Allow
+                Action:
+                  - wafv2:GetIPSet
+                  - wafv2:UpdateIPSet
+                Resource:
+                  - !Sub arn:${AWS::Partition}:wafv2:us-east-1:${AWS::AccountId}:global/ipset/aws-messaging-mcp-*/*
+
+  DeployRoleProd:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: aws-messaging-mcp-deploy-prod
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !Ref GitHubOIDCProvider
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+                token.actions.githubusercontent.com:sub: !Sub repo:${GitHubOwner}/${GitHubRepo}:environment:prod
+      Policies:
+        - PolicyName: deploy-prod
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: ManageProdStack
+                Effect: Allow
+                Action:
+                  - cloudformation:CreateChangeSet
+                  - cloudformation:ExecuteChangeSet
+                  - cloudformation:DeleteChangeSet
+                  - cloudformation:DescribeChangeSet
+                  - cloudformation:DescribeStacks
+                  - cloudformation:DescribeStackEvents
+                  - cloudformation:GetTemplate
+                  - cloudformation:GetTemplateSummary
+                  - cloudformation:ListChangeSets
+                Resource:
+                  - !Sub arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/aws-messaging-mcp-prod/*
+              - Sid: ValidateTemplates
+                Effect: Allow
+                Action: cloudformation:ValidateTemplate
+                Resource: "*"
+              - Sid: PassCfnServiceRole
+                Effect: Allow
+                Action: iam:PassRole
+                Resource: !GetAtt CfnServiceRole.Arn
+                Condition:
+                  StringEquals:
+                    iam:PassedToService: cloudformation.amazonaws.com
+              - Sid: ReadWriteArtifacts
+                Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:GetObject
+                  - s3:ListBucket
+                Resource:
+                  - !GetAtt ArtifactBucket.Arn
+                  - !Sub ${ArtifactBucket.Arn}/*
+
+Outputs:
+  DevDeployRoleArn:
+    Description: OIDC role for the dev environment (GitHub secret AWS_DEPLOY_ROLE_ARN on env dev).
+    Value: !GetAtt DeployRoleDev.Arn
+  ProdDeployRoleArn:
+    Description: OIDC role for the prod environment (GitHub secret AWS_DEPLOY_ROLE_ARN on env prod).
+    Value: !GetAtt DeployRoleProd.Arn
+  CfnServiceRoleArn:
+    Description: Service role passed to CloudFormation by both deploy roles.
+    Value: !GetAtt CfnServiceRole.Arn
+  ArtifactBucketName:
+    Description: Immutable build-artifact bucket (GitHub secret ARTIFACT_BUCKET).
+    Value: !Ref ArtifactBucket
