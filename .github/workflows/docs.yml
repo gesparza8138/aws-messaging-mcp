@@ -30,5 +30,5 @@ jobs:
         # repo deterministically; external-URL checking is deferred (flaky in
         # CI due to rate limits) and revisited in M5 hardening.
         run: |
-          docker run --rm -v "$PWD:/input" -w /input lycheeverse/lychee:lychee-v0.24.2 \
+          docker run --rm -v "$PWD:/input" -w /input lycheeverse/lychee:0.24.2 \
             --offline --no-progress --root-dir /input "./**/*.md"
