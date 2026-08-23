@@ -261,15 +261,23 @@ Resources:
                 Action: ssm:GetParameter
                 Resource:
                   - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/messaging-mcp/*
-              - Sid: UpdateWafIpSetForE2e
-                # R7/F7: the e2e job may temporarily add the runner's egress
-                # IP to the allow-list for the duration of a test run.
+              - Sid: RegisterE2eRunnerIp
+                # R7: the e2e job adds the runner's egress IP to the allow-list
+                # for the duration of a run and republishes the dev function.
                 Effect: Allow
                 Action:
-                  - wafv2:GetIPSet
-                  - wafv2:UpdateIPSet
+                  - ssm:PutParameter
                 Resource:
-                  - !Sub arn:${AWS::Partition}:wafv2:us-east-1:${AWS::AccountId}:global/ipset/aws-messaging-mcp-*/*
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/messaging-mcp/edge/allowed-cidrs
+              - Sid: RepublishDevAllowListFunction
+                Effect: Allow
+                Action:
+                  - cloudfront:GetFunction
+                  - cloudfront:DescribeFunction
+                  - cloudfront:UpdateFunction
+                  - cloudfront:PublishFunction
+                Resource:
+                  - !Sub arn:${AWS::Partition}:cloudfront::${AWS::AccountId}:function/aws-messaging-mcp-dev-ip-allowlist
 
   DeployRoleProd:
     Type: AWS::IAM::Role

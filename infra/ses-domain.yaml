@@ -1,0 +1,111 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  aws-messaging-mcp shared SES domain identity (us-west-2): Easy DKIM for the
+  root domain with the DKIM, DMARC, and SPF records written to the Route 53
+  root zone, and a custom MAIL FROM subdomain in the mcp zone. One identity
+  per account-region is shared by both stages; stages differ only by sender
+  allow-list. Deployed once, manually, like the edge stack.
+
+Parameters:
+  DomainName:
+    Type: String
+    Default: gabriel-esparza.com
+    Description: Domain to verify as the SES sender identity.
+  MailFromDomain:
+    Type: String
+    Default: bounce.mcp.gabriel-esparza.com
+    Description: Custom MAIL FROM subdomain (inside the mcp zone) for SPF alignment.
+  DmarcReportAddress:
+    Type: String
+    Default: esparza.gabriel@gmail.com
+    Description: Aggregate DMARC report recipient.
+
+Resources:
+  DomainIdentity:
+    Type: AWS::SES::EmailIdentity
+    Properties:
+      EmailIdentity: !Ref DomainName
+      DkimAttributes:
+        SigningEnabled: true
+      DkimSigningAttributes:
+        NextSigningKeyLength: RSA_2048_BIT
+      MailFromAttributes:
+        MailFromDomain: !Ref MailFromDomain
+        BehaviorOnMxFailure: USE_DEFAULT_VALUE
+
+  DkimRecord1:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: "{{resolve:ssm:/messaging-mcp/root-zone-id}}"
+      Name: !GetAtt DomainIdentity.DkimDNSTokenName1
+      Type: CNAME
+      TTL: "1800"
+      ResourceRecords: [!GetAtt DomainIdentity.DkimDNSTokenValue1]
+  DkimRecord2:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: "{{resolve:ssm:/messaging-mcp/root-zone-id}}"
+      Name: !GetAtt DomainIdentity.DkimDNSTokenName2
+      Type: CNAME
+      TTL: "1800"
+      ResourceRecords: [!GetAtt DomainIdentity.DkimDNSTokenValue2]
+  DkimRecord3:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: "{{resolve:ssm:/messaging-mcp/root-zone-id}}"
+      Name: !GetAtt DomainIdentity.DkimDNSTokenName3
+      Type: CNAME
+      TTL: "1800"
+      ResourceRecords: [!GetAtt DomainIdentity.DkimDNSTokenValue3]
+
+  # No mailbox exists on the root domain (owner decision), so SES owns the
+  # policy: nothing sends as the bare domain and DMARC quarantines the rest.
+  RootSpf:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: "{{resolve:ssm:/messaging-mcp/root-zone-id}}"
+      Name: !Ref DomainName
+      Type: TXT
+      TTL: "1800"
+      ResourceRecords: ['"v=spf1 -all"']
+  Dmarc:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: "{{resolve:ssm:/messaging-mcp/root-zone-id}}"
+      Name: !Sub _dmarc.${DomainName}
+      Type: TXT
+      TTL: "1800"
+      ResourceRecords:
+        - !Sub '"v=DMARC1; p=quarantine; rua=mailto:${DmarcReportAddress}; adkim=s; aspf=r"'
+
+  # MAIL FROM subdomain lives in the mcp zone (owned by the edge stack).
+  MailFromMx:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: "{{resolve:ssm:/messaging-mcp/edge/hosted-zone-id}}"
+      Name: !Ref MailFromDomain
+      Type: MX
+      TTL: "1800"
+      ResourceRecords: [!Sub "10 feedback-smtp.${AWS::Region}.amazonses.com"]
+  MailFromSpf:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: "{{resolve:ssm:/messaging-mcp/edge/hosted-zone-id}}"
+      Name: !Ref MailFromDomain
+      Type: TXT
+      TTL: "1800"
+      ResourceRecords: ['"v=spf1 include:amazonses.com -all"']
+
+  IdentityArnParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: /messaging-mcp/ses/identity-arn
+      Type: String
+      Value: !Sub arn:${AWS::Partition}:ses:${AWS::Region}:${AWS::AccountId}:identity/${DomainName}
+      Description: SES domain identity ARN for the app stacks' IAM conditions.
+
+Outputs:
+  IdentityArn:
+    Value: !GetAtt IdentityArnParam.Value
+  MailFromDomain:
+    Value: !Ref MailFromDomain
