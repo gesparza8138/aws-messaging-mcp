@@ -306,7 +306,8 @@ Resources:
       FunctionName: !Ref McpFunction
       Action: lambda:InvokeFunction
       Principal: "*"
-      FunctionUrlAuthType: NONE
+      # Restricts this grant to calls arriving via the function URL.
+      InvokedViaFunctionUrl: true
 
   Distribution:
     Type: AWS::CloudFront::Distribution
