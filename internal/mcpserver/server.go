@@ -9,13 +9,24 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/gesparza8138/aws-messaging-mcp/internal/auth"
+	"github.com/gesparza8138/aws-messaging-mcp/internal/awsclients"
+	"github.com/gesparza8138/aws-messaging-mcp/internal/guardrails"
 	"github.com/gesparza8138/aws-messaging-mcp/internal/httpapi"
+	"github.com/gesparza8138/aws-messaging-mcp/internal/settings"
 )
 
 // Version is stamped into the MCP server implementation info.
 const Version = "0.2.0"
 
-// HelloInput is the hello tool's input (mirrors the M1 Python tool).
+// Deps wires the tools to their backends. A nil SES leaves the email tools
+// unregistered (tests that only exercise the auth chain use this).
+type Deps struct {
+	Settings settings.Settings
+	SES      awsclients.SES
+	Limiter  *guardrails.Limiter
+}
+
+// HelloInput is the hello tool's input.
 type HelloInput struct {
 	Name string `json:"name,omitempty" jsonschema:"Whom to greet"`
 }
@@ -28,16 +39,29 @@ type HelloOutput struct {
 	AuthMethod string `json:"auth_method"`
 }
 
-// NewHandler returns the Streamable HTTP handler for a server exposing the
-// M1 tool set. Host-header (DNS-rebinding) protection is disabled because
-// CloudFront terminates the public hostname; the origin secret and bearer
-// auth are the real gate.
-func NewHandler(stage string) http.Handler {
+// NewHandler returns the Streamable HTTP handler for the tool set. Host-header
+// (DNS-rebinding) protection is disabled because CloudFront terminates the
+// public hostname; the origin secret and bearer auth are the real gate.
+func NewHandler(d Deps) http.Handler {
 	server := mcp.NewServer(&mcp.Implementation{Name: "aws-messaging-mcp", Version: Version}, nil)
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "hello",
 		Description: "Verify the full auth chain end to end; requires msg/read.",
-	}, helloHandler(stage))
+	}, d.hello())
+	if d.SES != nil {
+		mcp.AddTool(server, &mcp.Tool{
+			Name:        "ses_send_email",
+			Description: "Send an email via Amazon SES (sesv2 SendEmail shape); requires msg/email:send. Supports DryRun.",
+		}, d.sendEmail())
+		mcp.AddTool(server, &mcp.Tool{
+			Name:        "ses_list_email_identities",
+			Description: "List verified SES sender identities; requires msg/read.",
+		}, d.listIdentities())
+		mcp.AddTool(server, &mcp.Tool{
+			Name:        "ses_get_account",
+			Description: "SES account status: sandbox/production, quotas; requires msg/read.",
+		}, d.getAccount())
+	}
 	return mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, &mcp.StreamableHTTPOptions{
 		Stateless:                  true,
 		JSONResponse:               true,
@@ -45,22 +69,19 @@ func NewHandler(stage string) http.Handler {
 	})
 }
 
-func helloHandler(stage string) mcp.ToolHandlerFor[HelloInput, HelloOutput] {
+func (d Deps) hello() mcp.ToolHandlerFor[HelloInput, HelloOutput] {
 	return func(ctx context.Context, _ *mcp.CallToolRequest, in HelloInput) (*mcp.CallToolResult, HelloOutput, error) {
-		principal, ok := httpapi.PrincipalFrom(ctx)
-		if !ok {
-			return toolError("no authenticated principal in context"), HelloOutput{}, nil
+		if res := requireScope(ctx, "msg/read"); res != nil {
+			return res, HelloOutput{}, nil
 		}
-		if err := auth.RequireScope(principal, "msg/read"); err != nil {
-			return toolError(err.Error()), HelloOutput{}, nil
-		}
+		principal, _ := httpapi.PrincipalFrom(ctx)
 		name := in.Name
 		if name == "" {
 			name = "world"
 		}
 		return nil, HelloOutput{
 			Message:    "Hello, " + name + "!",
-			Stage:      stage,
+			Stage:      d.Settings.Stage,
 			Caller:     principal.Subject,
 			AuthMethod: principal.Method,
 		}, nil
@@ -75,3 +96,5 @@ func toolError(message string) *mcp.CallToolResult {
 		Content: []mcp.Content{&mcp.TextContent{Text: message}},
 	}
 }
+
+var _ = auth.RequireScope // referenced via requireScope in ses.go

@@ -14,7 +14,12 @@ import (
 	"github.com/aws/aws-lambda-go/lambda"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
+	"github.com/aws/aws-sdk-go-v2/service/sesv2"
 	"github.com/aws/aws-sdk-go-v2/service/ssm"
+
+	"github.com/gesparza8138/aws-messaging-mcp/internal/awsclients"
+	"github.com/gesparza8138/aws-messaging-mcp/internal/guardrails"
 
 	"github.com/gesparza8138/aws-messaging-mcp/internal/auth"
 	"github.com/gesparza8138/aws-messaging-mcp/internal/httpapi"
@@ -32,10 +37,25 @@ func main() {
 	if err != nil {
 		log.Fatalf("settings: %v", err)
 	}
+	awsCfg, err := config.LoadDefaultConfig(ctx, config.WithRegion(s.AWSRegion))
+	if err != nil {
+		log.Fatalf("aws config: %v", err)
+	}
+	deps := mcpserver.Deps{
+		Settings: s,
+		SES:      sesv2.NewFromConfig(awsCfg),
+	}
+	if s.RateLimitTable != "" {
+		deps.Limiter = &guardrails.Limiter{
+			Store:   &awsclients.DynamoCounters{Client: dynamodb.NewFromConfig(awsCfg), Table: s.RateLimitTable},
+			PerHour: s.RateLimitPerHour,
+			PerDay:  s.RateLimitPerDay,
+		}
+	}
 	handler := httpapi.NewHandler(httpapi.Config{
 		Settings: s,
 		Verifier: auth.NewVerifier(s.CognitoIssuer, s.AllowedClientIDs, auth.NewJWKSProvider(s.JWKSURL())),
-		MCP:      mcpserver.NewHandler(s.Stage),
+		MCP:      mcpserver.NewHandler(deps),
 	})
 
 	if os.Getenv("AWS_LAMBDA_RUNTIME_API") != "" {

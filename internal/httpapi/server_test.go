@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/aws/aws-sdk-go-v2/service/sesv2"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/gesparza8138/aws-messaging-mcp/internal/auth"
@@ -63,10 +64,34 @@ func newFixture(t *testing.T, mode string) *fixture {
 	handler = httpapi.NewHandler(httpapi.Config{
 		Settings: cfg,
 		Verifier: auth.NewVerifier(issuer, []string{clientID}, keys.Provider()),
-		MCP:      mcpserver.NewHandler("test"),
+		MCP:      mcpserver.NewHandler(mcpserver.Deps{Settings: cfg}),
 	})
 	t.Cleanup(srv.Close)
 	return &fixture{srv: srv, keys: keys, cfg: cfg}
+}
+
+// newFixtureWithSES is newFixture plus a fake SES client so the email tools
+// register; email guardrail config mirrors the mcpserver unit tests.
+func newFixtureWithSES(t *testing.T) *fixture {
+	t.Helper()
+	f := newFixture(t, metadataDirect)
+	cfg := f.cfg
+	cfg.SESConfigurationSet = "cfgset"
+	cfg.SESReplyTo = "owner@example.com"
+	cfg.SESSenderAddresses = []string{"mcp-dev@example.com"}
+	cfg.RecipientAllowList = []string{"owner@example.com"}
+	cfg.MaxRecipients = 5
+	cfg.EmailMaxRawBytes = 1024
+	handler := httpapi.NewHandler(httpapi.Config{
+		Settings: cfg,
+		Verifier: auth.NewVerifier(issuer, []string{clientID}, f.keys.Provider()),
+		MCP:      mcpserver.NewHandler(mcpserver.Deps{Settings: cfg, SES: stubSES{}}),
+	})
+	srv := httptest.NewServer(handler)
+	t.Cleanup(srv.Close)
+	cfg.MCPResourceURL = srv.URL + "/mcp/"
+	cfg.PublicBaseURL = srv.URL
+	return &fixture{srv: srv, keys: f.keys, cfg: cfg}
 }
 
 func (f *fixture) do(t *testing.T, method, path, token string, body string) *http.Response {
@@ -291,3 +316,54 @@ func TestPrincipalFromEmptyContext(t *testing.T) {
 }
 
 var _ = io.EOF
+
+// sesDryRunThroughFullChain exercises an email tool end to end: HTTP, auth
+// middleware, scope check, guardrails, DryRun injection.
+func TestSESDryRunThroughFullChain(t *testing.T) {
+	f := newFixtureWithSES(t)
+	tok, _ := f.keys.Mint(testkeys.Claims{"scope": "msg/read msg/email:send"})
+	ctx := context.Background()
+	client := mcp.NewClient(&mcp.Implementation{Name: "test-client", Version: "0"}, nil)
+	transport := &mcp.StreamableClientTransport{
+		Endpoint:   f.srv.URL + "/mcp/",
+		HTTPClient: &http.Client{Transport: headerTransport{token: tok}},
+	}
+	session, err := client.Connect(ctx, transport, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { session.Close() })
+	tools, err := session.ListTools(ctx, nil)
+	if err != nil || len(tools.Tools) != 4 {
+		t.Fatalf("tools: %v %v", err, tools)
+	}
+	result, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "ses_send_email", Arguments: map[string]any{
+		"FromEmailAddress": "mcp-dev@example.com",
+		"Destination":      map[string]any{"ToAddresses": []string{"owner@example.com"}},
+		"Content":          map[string]any{"Simple": map[string]any{"Subject": map[string]any{"Data": "s"}, "Body": map[string]any{"Text": map[string]any{"Data": "b"}}}},
+		"DryRun":           true,
+	}})
+	if err != nil || result.IsError {
+		t.Fatalf("call: %v %+v", err, result)
+	}
+	out := structured(t, result)
+	meta := out["ServerMetadata"].(map[string]any)
+	if meta["dry_run"] != true {
+		t.Fatalf("metadata: %v", meta)
+	}
+	if out["WouldCall"] == nil {
+		t.Fatalf("WouldCall missing: %v", out)
+	}
+}
+
+type stubSES struct{}
+
+func (stubSES) SendEmail(context.Context, *sesv2.SendEmailInput, ...func(*sesv2.Options)) (*sesv2.SendEmailOutput, error) {
+	return &sesv2.SendEmailOutput{}, nil
+}
+func (stubSES) ListEmailIdentities(context.Context, *sesv2.ListEmailIdentitiesInput, ...func(*sesv2.Options)) (*sesv2.ListEmailIdentitiesOutput, error) {
+	return &sesv2.ListEmailIdentitiesOutput{}, nil
+}
+func (stubSES) GetAccount(context.Context, *sesv2.GetAccountInput, ...func(*sesv2.Options)) (*sesv2.GetAccountOutput, error) {
+	return &sesv2.GetAccountOutput{}, nil
+}
