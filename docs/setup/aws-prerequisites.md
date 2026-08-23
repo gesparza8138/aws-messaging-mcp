@@ -16,7 +16,6 @@ Fill this in as you go; these become `infra/params/{dev,prod}.json` values.
 | `SesReplyTo` | `esparza.gabriel@gmail.com` | same | §1 |
 | `SmsOriginationIdentities` | toll-free number ARN | same number (or a second one) | §2 |
 | `SmsPoolId` *(optional)* | — | — | §2 |
-| `RcsAgentId` | test agent | launched agent | §3 |
 | `RecipientAllowList` (dev only) | `esparza.gabriel@gmail.com`, owner's mobile (GitHub secret `E2E_TEST_PHONE`) | — | §5 |
 | `CognitoUserEmail` | `esparza.gabriel@gmail.com` | same | §4 |
 | `SigningPublicKeyPem` | from `scripts/rotate-signing-key.py` | separate key | §6 |
@@ -110,18 +109,11 @@ Carriers typically review in 1–2 weeks. Until approved, expect heavy filtering
 - Account-level SMS spend limit: set to **$20/month** (Console → Account settings, or `aws pinpoint-sms-voice-v2 set-text-message-spend-limit-override --monthly-limit 20`).
 - Create a **protect configuration** that allows only `US` and attach it to the configuration set; the stack parameter `ProtectConfigurationId` carries it.
 
-## 3. AWS End User Messaging — RCS
+## 3. RCS — descoped
 
-RCS is the most paperwork-heavy channel and the most likely to slip, which is why it is its own milestone (M4). Requirements at time of writing:
-
-1. **Brand**: name, description, logo (224×224 PNG), hero image (1440×448), brand color, contact phone + email, **privacy-policy URL and terms-of-service URL** (both mandatory — host minimal pages at `https://mcp.gabriel-esparza.com/legal/privacy` and `/legal/terms`).
-2. **RCS agent**: created under the brand with the above assets; the agent ID is the `OriginationIdentity` for `rcs_send_message`.
-3. **Testing registration**: register your own device(s) as test devices so the agent can message them before launch. This is enough for `dev` and all E2E tests.
-4. **Country launch registration (US)**: carrier review of the agent and use case before it can message the public. Use the same use-case text as §2.2. Expect several weeks; prod RCS is gated on this.
-5. **Fallback**: RCS messages to non-RCS devices are dropped unless `Fallback` is supplied; the toll-free number from §2 is the fallback origination identity.
-
-> [!WARNING]
-> Brand verification for RCS is designed for businesses. A personal brand may be rejected or asked for proof of business registration. If that happens, keep RCS in **testing registration** only (messages to your registered devices) and treat public RCS as out of scope; SMS/MMS via toll-free covers everyone else.
+RCS was removed from scope on 2026-08-23 (PRD Appendix C): brand
+verification, per-country launch registration, and carrier review are
+disproportionate for a personal tool that SMS/MMS covers.
 
 ## 4. Cognito user
 
@@ -170,8 +162,6 @@ Pass the printed PEM as `SigningPublicKeyPem` when deploying. Use a different ke
 - [ ] Toll-free number allocated; ARN recorded
 - [ ] Toll-free verification submitted / approved
 - [ ] SMS monthly spend limit set; protect configuration created
-- [ ] RCS brand + agent created; test device registered
-- [ ] RCS US launch registration submitted (prod, optional)
 - [ ] Cognito owner user created, TOTP enrolled
 - [ ] `e2e-ci` user + `ci` app client created (dev)
 - [ ] Signing key pair generated per stage

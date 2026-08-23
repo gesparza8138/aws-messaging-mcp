@@ -16,7 +16,6 @@ var ScopesSupported = []string{
 	"msg/read",
 	"msg/email:send",
 	"msg/sms:send",
-	"msg/rcs:send",
 	"msg/files:write",
 }
 

@@ -85,7 +85,7 @@ JSON
 api -X PUT "repos/$FULL/actions/permissions/workflow" -f default_workflow_permissions=read -F can_approve_pull_request_reviews=false
 
 step "Labels"
-for l in "dependencies:0366d6" "ci:fbca04" "security:d73a4a" "docs:0075ca" "tool:email:c2e0c6" "tool:sms:c2e0c6" "tool:rcs:c2e0c6" "tool:files:c2e0c6" "infra:bfd4f2"; do
+for l in "dependencies:0366d6" "ci:fbca04" "security:d73a4a" "docs:0075ca" "tool:email:c2e0c6" "tool:sms:c2e0c6" "tool:files:c2e0c6" "infra:bfd4f2"; do
   gh label create "${l%:*}" --repo "$FULL" --color "${l##*:}" --force >/dev/null
 done
 

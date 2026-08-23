@@ -4,7 +4,7 @@
 [![docs](https://github.com/gesparza8138/aws-messaging-mcp/actions/workflows/docs.yml/badge.svg)](https://github.com/gesparza8138/aws-messaging-mcp/actions/workflows/docs.yml)
 
 A serverless [Model Context Protocol](https://modelcontextprotocol.io) server on AWS Lambda that
-lets Claude Code, Claude Desktop, and claude.ai Routines send email (Amazon SES), SMS/MMS/RCS
+lets Claude Code, Claude Desktop, and claude.ai Routines send email (Amazon SES), SMS/MMS
 (AWS End User Messaging), and share files via CloudFront-signed download links.
 
 > [!NOTE]

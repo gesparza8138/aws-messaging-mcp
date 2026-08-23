@@ -1,6 +1,6 @@
 # Product Requirements Document: `aws-messaging-mcp`
 
-A serverless MCP server on AWS Lambda that lets Claude Code and Claude Desktop send email (Amazon SES) and SMS / MMS / RCS messages (AWS End User Messaging).
+A serverless MCP server on AWS Lambda that lets Claude Code and Claude Desktop send email (Amazon SES) and SMS / MMS messages (AWS End User Messaging). RCS was descoped 2026-08-23 (Appendix C).
 
 | Field | Value |
 | --- | --- |
@@ -44,7 +44,7 @@ A serverless MCP server on AWS Lambda that lets Claude Code and Claude Desktop s
 `aws-messaging-mcp` is a remote, stateless [Model Context Protocol](https://modelcontextprotocol.io) server exposed over Streamable HTTP. It runs as a single AWS Lambda function behind CloudFront and exposes a small set of tools that wrap two AWS services:
 
 - **Amazon SES v2** – transactional email.
-- **AWS End User Messaging (SMS & Voice v2 API)** – SMS, MMS (images), and RCS rich messages with SMS/MMS fallback.
+- **AWS End User Messaging (SMS & Voice v2 API)** – SMS and MMS (images). RCS is out of scope (Appendix C).
 - **Amazon S3 + CloudFront signed URLs** – upload a file and get a time-limited download link (up to 365 days) to share with anyone.
 
 The server is designed for a single owner who connects from **Claude Code**, **Claude Desktop**, and **claude.ai Routines / scheduled runs**. It must run unattended for long periods without human re-authentication, while keeping every credential in flight short-lived. Infrastructure cost at rest must be effectively zero; the only meaningful spend should be the messages themselves.
@@ -57,7 +57,7 @@ Tool parameter shapes intentionally mirror the AWS CLI / API request shapes so t
 
 | # | Goal | Success measure |
 | --- | --- | --- |
-| G1 | Send email, SMS, MMS, and RCS, and share files via signed download links, from any Claude client via MCP tools | All five paths verified end-to-end from Claude Code and Claude Desktop |
+| G1 | Send email, SMS, and MMS, and share files via signed download links, from any Claude client via MCP tools | All four paths verified end-to-end from Claude Code and Claude Desktop |
 | G2 | Unattended operation | A Routine can call a tool ≥ 12 months after initial consent with no human re-auth |
 | G3 | Short-lived credentials | No bearer credential accepted by the server lives longer than 60 minutes |
 | G4 | Near-zero idle cost | Infrastructure bill ≤ $2/month excluding messaging fees |
@@ -188,11 +188,9 @@ flowchart LR
 | `ses_send_email` | `sesv2:SendEmail` | `msg/email:send` | Send a simple or raw email |
 | `ses_list_email_identities` | `sesv2:ListEmailIdentities` | `msg/read` | Discover verified senders |
 | `ses_get_account` | `sesv2:GetAccount` | `msg/read` | Sandbox status, send quota |
-| `sms_send_text_message` | `sms-voice:SendTextMessage` | `msg/sms:send` | SMS (also RCS plain text if origination is an RCS agent) |
+| `sms_send_text_message` | `sms-voice:SendTextMessage` | `msg/sms:send` | SMS |
 | `sms_send_media_message` | `sms-voice:SendMediaMessage` | `msg/sms:send` | MMS with images |
-| `rcs_send_message` | `sms-voice:SendRcsMessage` | `msg/rcs:send` | RCS text, file, rich card, carousel, suggestions, with fallback |
 | `sms_describe_phone_numbers` | `sms-voice:DescribePhoneNumbers` | `msg/read` | Discover origination numbers |
-| `sms_describe_rcs_agents` | `sms-voice:DescribeRcsAgents` *(name to confirm against current API)* | `msg/read` | Discover RCS agents |
 | `sms_get_message_status` | `sms-voice:GetMessage`/event lookup *(v2 only)* | `msg/read` | Delivery status for a `MessageId` |
 | `files_put_object` | `s3:PutObject` + CloudFront URL signing | `msg/files:write` | Upload inline content, get a signed download URL |
 | `files_create_upload_url` | `s3:PutObject` presigned (`aws s3 presign`-style) | `msg/files:write` | Get a short-lived `PUT` URL for large files, then sign for download |
@@ -270,34 +268,6 @@ Mirrors [`SendMediaMessage`](https://docs.aws.amazon.com/pinpoint/latest/apirefe
 
 `MediaUrls` must point to the server-owned media bucket (see §8). An optional `MediaUpload` convenience field (`{ "FileName", "ContentType", "Base64Content" }`) lets the model attach an image inline; the server uploads it to the media bucket with a short lifecycle and substitutes the `s3://` URL before calling the API.
 
-#### `rcs_send_message`
-
-Mirrors [`SendRcsMessage`](https://docs.aws.amazon.com/pinpoint/latest/apireference_smsvoicev2/API_SendRcsMessage.html) (API shape to be locked against the live boto3 model at implementation time; boto3 ≥ 1.43.37 required).
-
-```jsonc
-{
-  "DestinationPhoneNumber": "+1XXXXXXXXXX",
-  "OriginationIdentity": "rcs-agent-id",
-  "Message": {
-    // exactly one of:
-    "Text": { "Text": "string", "Suggestions": [ ... ] },
-    "File": { "FileUrl": "https://...", "ThumbnailUrl": "https://...", "Suggestions": [ ... ] },
-    "RichCard": { ... },
-    "Carousel": { ... }
-  },
-  "Fallback": {
-    "OriginationIdentity": "+1XXXXXXXXXX (SMS/MMS-capable)",
-    "MessageBody": "string",
-    "MediaUrls": ["s3://..."]
-  },
-  "TimeToLive": 300,
-  "DryRun": false
-}
-```
-
-> [!IMPORTANT]
-> Without `Fallback`, recipients whose device cannot receive RCS get nothing. The server will **warn** in `ServerMetadata` when `Fallback` is omitted and a `REQUIRE_RCS_FALLBACK=true` setting makes it a hard error.
-
 #### `files_put_object`
 
 Mirrors [`PutObject`](https://docs.aws.amazon.com/AmazonS3/latest/API/API_PutObject.html) for the upload half and [`aws cloudfront sign`](https://docs.aws.amazon.com/cli/latest/reference/cloudfront/sign.html) for the link half. `Bucket` is **not** a parameter — the server owns the files bucket.
@@ -360,7 +330,7 @@ Returns `{ "SignedUrl", "ExpiresAt", "PolicyType": "canned | custom" }`. Re-sign
 | A3 | MFA (TOTP) is required on the single Cognito user. SMS MFA is disabled (cost, SIM-swap risk). |
 | A4 | The MCP server is an OAuth resource server: unauthenticated requests return `401` with `WWW-Authenticate: Bearer resource_metadata="https://<host>/.well-known/oauth-protected-resource"`. |
 | A5 | The server serves RFC 9728 protected-resource metadata at `/.well-known/oauth-protected-resource` (and the path-suffixed variant) listing the Cognito issuer and `scopes_supported`. |
-| A6 | Scopes are defined on a Cognito resource server named `msg`: `msg/read`, `msg/email:send`, `msg/sms:send`, `msg/rcs:send`, `msg/files:write`. Each tool enforces its scope. |
+| A6 | Scopes are defined on a Cognito resource server named `msg`: `msg/read`, `msg/email:send`, `msg/sms:send`, `msg/files:write` (plus a dormant `msg/rcs:send` kept defined so existing consents keep refreshing; no tool accepts it). Each tool enforces its scope. |
 | A7 | A **break-glass static bearer token** may be enabled per stage. It is stored as a SHA-256 hash in SSM Parameter Store, compared in constant time, and grants a configurable scope set. It is disabled by default in `prod`. |
 | A8 | All accepted tokens are validated for signature (RS256, Cognito JWKS, cached ≤ 1 h), `iss`, `client_id` ∈ allowed app clients, `token_use == "access"`, and `exp`. |
 | A9 | The origin-secret header is validated before any token work so that traffic bypassing CloudFront is rejected cheaply. |
@@ -443,7 +413,6 @@ These run for every send tool regardless of which client or token is calling. Th
 | Max recipients per email | 10 | 10 | stack parameter |
 | `MaxPrice` ceiling for SMS/MMS | $0.05 | $0.05 | stack parameter |
 | `DryRun` | available | available | per call |
-| RCS fallback required | warn | warn (configurable to error) | `REQUIRE_RCS_FALLBACK` |
 | Media size / type | ≤ 5 MB, jpeg/png/gif | same | code constants |
 | Budget alarm | $10 / month on SES + EUM | $25 / month | `AWS::Budgets::Budget` |
 | Files: max link expiry | 365 days | 365 days | `FilesMaxExpiryDays` |
@@ -500,7 +469,6 @@ Pure CloudFormation (YAML), no SAM transform, no CDK. Deployed with `aws cloudfo
 
 - Verify SES sender identity(ies) and request production access (exit sandbox) for `prod`.
 - Request a toll-free number (or 10DLC), complete registration, enable SMS + MMS.
-- Create an RCS agent, complete brand verification, and a country launch (or testing) registration; register test devices for `dev`.
 - Create the single Cognito user and enrol TOTP (`go run ./cmd/ops bootstrap-user`).
 - Enrol the CloudFront distribution in the Free flat-rate plan (console action at time of writing).
 - Populate the two SSM secure parameters.
@@ -664,7 +632,6 @@ Assumptions: single owner, ~5,000 MCP requests/month, ~300 emails, ~200 SMS, ~50
 | EUM toll-free number lease | ~$2 / month | 1 | $2.00 |
 | SMS (US) | ~$0.009 + carrier fees | 200 | ~$2.00 |
 | MMS (US) | ~$0.02–0.03 | 50 | ~$1.25 |
-| RCS | per-message; verify in console | 50 | ~$1.00 |
 | **Messaging subtotal** | | | **≈ $6–7** |
 | **Total** | | | **≈ $7–9 / month** |
 
@@ -678,9 +645,9 @@ Assumptions: single owner, ~5,000 MCP requests/month, ~300 emails, ~200 SMS, ~50
 | R1 | Hosted bridge fails to refresh tokens (prior incident reported) | Medium | Routines stop | Break-glass token + runbook; alarm on `AuthFailures`; long refresh lifetime means failure is rare, not chronic |
 | R2 | ~~Cognito discovery metadata omits `code_challenge_methods_supported`; a strict client may refuse PKCE~~ **Resolved 2026-08-22:** both Claude Code and the hosted bridge completed PKCE S256 against Cognito directly (`AuthMetadataMode=direct`); the fronted RFC 8414 document stays available as a feature flag | — | — | Flip `AuthMetadataMode=fronted` per stage if a future client regresses |
 | R3 | ~~CloudFront buffering interferes with Streamable HTTP~~ **Resolved 2026-08-22:** stateless JSON responses through WAF + CloudFront + Function URL (BUFFERED) + Lambda Web Adapter verified with the `mcp` client, Claude Code, and the hosted bridge | — | — | Keep `json_response=True`, `stateless_http=True` |
-| R4 | `SendRcsMessage` API shape / boto3 support differs from docs at build time | Medium | Rework | Contract tests pin to the live botocore model; tool schema generated from it |
+| R4 | ~~`SendRcsMessage` API shape~~ Moot 2026-08-23: RCS descoped | — | — | — |
 | R5 | CloudFormation coverage for EUM v2 event destinations / RCS resources incomplete | Medium | Manual steps | Document as prerequisites; custom resource if needed |
-| R6 | RCS country launch registration delays | High | RCS slips | RCS is its own milestone; SMS/MMS ship first |
+| R6 | ~~RCS country launch registration delays~~ Moot 2026-08-23: RCS descoped | — | — | — |
 | R7 | ~~Claude Code home IP changes break WAF allow-list~~ **Resolved 2026-08-22:** keep the default-deny IP allow-list; `scripts/update-my-ip.sh` refreshes the owner entry; CI e2e runners self-register their egress IP for the run (dev deploy role holds scoped `wafv2:UpdateIPSet`, implemented with the e2e harness in M2) | — | — | Revisit token-only access only if the IP churn becomes a nuisance |
 | R8 | ~~CloudFront Free plan vs CloudFormation~~ **Resolved 2026-08-22:** CloudFormation has no plan support; enrolment is scripted via the `pricing-plan-manager` API (`scripts/enroll-pricing-plan.sh`). The Free plan covers one distribution — **prod** gets it (owner decision); dev stays pay-as-you-go and its WAF share is observed on the bill for M5 | — | — | Re-run the script if the prod distribution is ever recreated |
 | R9 | A long-lived (up to 365 d) signed URL leaks | Medium | Unintended download | Per-object revoke via `files_delete_object`; optional `IpAddress` custom policy; key rotation invalidates all links in an emergency; content-type deny-list |
@@ -697,7 +664,7 @@ Assumptions: single owner, ~5,000 MCP requests/month, ~300 emails, ~200 SMS, ~50
 | **M1 – Auth spike** | Cognito pool, `app.yaml` with hello-world tool, CloudFront + WAF, OAuth round-trip from Claude Code **and** Claude Desktop, Routine executes after token refresh | R2/R3/R7 resolved; `docs/setup/clients.md` written |
 | **M2 – Email** | `ses_send_email`, `ses_*` read tools, guardrails, unit + integration + E2E, tool docs | Real email sent from both clients in `dev`; prod deploy via release flow |
 | **M3 – SMS/MMS** | `sms_send_text_message`, `sms_send_media_message`, media upload path, number prerequisites doc | Real SMS + MMS from both clients; budget alarm verified |
-| **M4 – RCS** | `rcs_send_message` with fallback, RCS agent docs, contract tests | Real RCS to test device; fallback verified on non-RCS device |
+| ~~M4 – RCS~~ | Removed 2026-08-23 (Appendix C) | — |
 | **M4b – Files** | `files_*` tools, files bucket + OAC + key group + `/files/*` behavior, WAF path exemption, cleanup schedule, signing-key rotation script, `docs/files.md` | Signed link downloaded from a non-allow-listed network; expired/tampered links 403; cleanup verified |
 | **M5 – Hardening** | Dashboard, runbooks, incident drill (runaway sends), secret rotation drill, docs pass | All runbooks executed once successfully |
 
@@ -794,6 +761,7 @@ claude.ai: edit the connector → request headers → `Authorization: Bearer <to
 | 2026-08-22 | Email sender: `@gabriel-esparza.com` in both stages, `mcp-dev@` vs `mcp@`; DKIM at GoDaddy, MAIL FROM subdomains in Route 53; dev stays in SES sandbox | No mail hosted on the domain, so SES can own SPF/DMARC; sandbox doubles as dev recipient restriction |
 | 2026-08-22 | Repository is **public**, not private; the AWS account ID and the owner's phone number are kept out of the repo and stored as GitHub **secrets** (masked in Actions logs — variables are not masked) | GitHub Free gates rulesets and environment protection rules (the prod approval gate, which is part of the AWS security boundary via OIDC `environment:prod` trust) to public repos; required reviewers on private repos need Enterprise. Public also enables secret scanning push protection and CodeQL at no cost |
 | 2026-08-23 | Prod distribution + web ACL subscribed to the CloudFront **Free** flat-rate plan via `pricing-plan-manager` (plan forbids restricted price classes, so `PriceClass` is unset; the plan requires the ACL to protect only the subscribed distribution, so dev has no ACL). The `mcp` hosted zone is attached to the plan; the root zone is not eligible (one zone per Free plan) and stays pay-as-you-go at $0.50/month | Owner decision G12; cost model §14 updated |
+| 2026-08-23 | **RCS descoped** (tool, milestone M4, docs, cost rows removed; SMS/MMS remain M3). The Cognito scope `msg/rcs:send` stays defined but dormant so existing client consents keep refreshing; the server no longer advertises it | Owner decision: RCS needs brand verification, per-country carrier launch registration, and weeks of review - disproportionate complexity and cost for a personal tool that SMS/MMS covers |
 | 2026-08-23 | **Runtime pivot to Go** (`provided.al2023`, arm64, static `bootstrap`, official MCP Go SDK, in-house buffered Function URL adapter). Python remains only as a CI tool runner. Contract tests move from botocore to AWS SDK for Go v2 struct reflection | Cold start measured at ~2,950 ms in Python (runtime + Web Adapter + imports) versus **217 ms** in Go on the same stack, at a traffic level where nearly every call is a cold start; SnapStart/provisioned concurrency would have cost more than the G4 budget. Done before M2 while the app was ~500 lines (`docs/plans/go-pivot.md`) |
 | 2026-08-23 | Edge access control moves from WAF rules to a **CloudFront Function** (viewer-request IP allow-list with the `/files/*` exemption; list in SSM, applied live by `update-my-ip.sh`); the WAF web ACL stays attached to prod only, empty, for flat-rate plan eligibility; distributions are IPv4-only | The Free plan's WAF supports only managed rules, rate limiting, and geo blocking - an IP-set allow-list or path match makes the ACL (and its distribution) ineligible, which surfaced at the first `CreateSubscription`. CloudFront Functions are included in the plan; PRD 4.2 had listed this as the alternative |
 | 2026-08-22 | M1 auth spike outcomes: R2 resolved in `direct` mode (fronted metadata kept as a flag), R3 resolved, R7 = IP allow-list + `update-my-ip.sh` + CI self-registration, R8 = Free plan on **prod** via `pricing-plan-manager`; refresh proven (hosted-bridge call succeeded 17.8 min after the 15-min access token was issued); TOTP enrolment observed at first login (the per-user MFA list stays empty on MFA-required pools — API quirk, not a gap) | Spike ran against the deployed dev stack from Claude Code, Claude Desktop, and a delayed hosted call |
