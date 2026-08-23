@@ -28,6 +28,10 @@ Parameters:
 Resources:
   HostedZone:
     Type: AWS::Route53::HostedZone
+    # Never let an unrelated stack failure destroy the delegation - the NS
+    # values are pinned at GoDaddy and a recreated zone gets different ones.
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Properties:
       Name: !Ref DomainName
       HostedZoneConfig:
@@ -45,10 +49,12 @@ Resources:
       SubjectAlternativeNames:
         - !Sub "*.${DomainName}"
       ValidationMethod: DNS
+      # One entry only: the wildcard SAN shares the apex's validation CNAME,
+      # and listing both makes CloudFormation create the identical record
+      # twice in one change batch, which Route 53 rejects (observed 400
+      # "invalid set of changes for a resource record set").
       DomainValidationOptions:
         - DomainName: !Ref DomainName
-          HostedZoneId: !Ref HostedZone
-        - DomainName: !Sub "*.${DomainName}"
           HostedZoneId: !Ref HostedZone
       KeyAlgorithm: RSA_2048
 
