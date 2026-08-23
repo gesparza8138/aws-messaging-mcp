@@ -4,3 +4,7 @@
 
 [extend]
 useDefault = true
+
+[allowlist]
+description = "Cognito public OAuth client ids (PKCE public clients, not secrets; PRD 6.2)"
+regexes = ['''6giq64ctd72hqras9tb6udlkph''', '''1l5s2dpcaq6rqptf4toil9dmsg''']

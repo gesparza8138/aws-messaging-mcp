@@ -8,8 +8,9 @@ lets Claude Code, Claude Desktop, and claude.ai Routines send email (Amazon SES)
 (AWS End User Messaging), and share files via CloudFront-signed download links.
 
 > [!NOTE]
-> **Status: M0 (bootstrap).** The application arrives milestone by milestone; see the
-> [PRD](docs/PRD.md) §16 and the current [implementation plan](docs/plans/m0-m1.md).
+> **Status: M1 (auth spike) complete on dev; prod release in progress.** Tools arrive
+> milestone by milestone; see the [PRD](docs/PRD.md) §16, the [plan](docs/plans/m0-m1.md),
+> and [connecting clients](docs/setup/clients.md).
 
 ## Architecture (target)
 
