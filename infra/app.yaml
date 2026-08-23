@@ -390,9 +390,9 @@ Resources:
         Enabled: true
         Comment: !Sub aws-messaging-mcp ${Stage}
         HttpVersion: http2and3
-        # IPv4 only so the allow-list semantics are exact.
+        # IPv4 only so the allow-list semantics are exact. No PriceClass: the
+        # flat-rate plan forbids restricted price classes (default = all edges).
         IPV6Enabled: false
-        PriceClass: PriceClass_100
         # The (empty) web ACL exists for flat-rate plan eligibility; only the
         # prod distribution is subscribed, so only prod attaches it.
         WebACLId: !If [IsProd, "{{resolve:ssm:/messaging-mcp/edge/web-acl-arn}}", !Ref AWS::NoValue]
@@ -481,5 +481,8 @@ Outputs:
     Value: !Ref ClaudeCodeClient
   DistributionId:
     Value: !Ref Distribution
+  FunctionUrl:
+    Description: Raw Function URL (origin-secret protected); used by the release smoke test.
+    Value: !GetAtt McpFunctionUrl.FunctionUrl
   FunctionName:
     Value: !Ref McpFunction

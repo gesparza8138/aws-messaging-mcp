@@ -101,17 +101,26 @@ jobs:
             --parameter-overrides file://params.json
           aws cloudformation describe-stacks --stack-name aws-messaging-mcp-prod \
             --query 'Stacks[0].Outputs' --output table >> "$GITHUB_STEP_SUMMARY"
-      - name: smoke test (unauthenticated contracts only)
+      - name: smoke test
+        # Runners are not in the edge allow-list, so the public hostname must
+        # answer 403 from the CloudFront Function (proves the gate), and the
+        # application contracts are checked through the origin-secret path.
         run: |
           URL=$(aws cloudformation describe-stacks --stack-name aws-messaging-mcp-prod \
             --query 'Stacks[0].Outputs[?OutputKey==`McpUrl`].OutputValue' --output text)
           BASE=${URL%/mcp/}
+          code=$(curl -s -o /tmp/edge.json -w '%{http_code}' "$BASE/healthz")
+          [ "$code" = "403" ] && grep -q '"forbidden"' /tmp/edge.json || { echo "edge gate: expected 403 forbidden, got $code"; exit 1; }
+          echo "edge gate OK (runner blocked)"
+          FN=$(aws cloudformation describe-stacks --stack-name aws-messaging-mcp-prod \
+            --query 'Stacks[0].Outputs[?OutputKey==`FunctionUrl`].OutputValue' --output text)
+          echo "::add-mask::$FN"
           for i in $(seq 1 20); do
-            code=$(curl -s -o /dev/null -w '%{http_code}' "$BASE/healthz") && [ "$code" = "200" ] && break
+            code=$(curl -s -o /dev/null -w '%{http_code}' -H "X-Origin-Secret: ${{ steps.secrets.outputs.origin_secret }}" "${FN}healthz") && [ "$code" = "200" ] && break
             sleep 15
           done
-          [ "$code" = "200" ] || { echo "healthz returned $code"; exit 1; }
-          curl -sf "$BASE/.well-known/oauth-protected-resource" | jq -e '.resource == "'"$URL"'"' >/dev/null
-          code=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$URL" -H 'content-type: application/json' -d '{}')
+          [ "$code" = "200" ] || { echo "healthz via origin returned $code"; exit 1; }
+          curl -sf -H "X-Origin-Secret: ${{ steps.secrets.outputs.origin_secret }}" "${FN}.well-known/oauth-protected-resource" | jq -e --arg u "$URL" '.resource == $u' >/dev/null
+          code=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H "X-Origin-Secret: ${{ steps.secrets.outputs.origin_secret }}" -H 'content-type: application/json' -d '{}' "${FN}mcp/")
           [ "$code" = "401" ] || { echo "expected 401 without token, got $code"; exit 1; }
           echo "smoke OK: $URL"

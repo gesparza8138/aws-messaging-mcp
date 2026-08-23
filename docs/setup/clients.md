@@ -8,9 +8,9 @@ CIMD, so the client id is pasted in.
 | Value | dev | prod |
 | --- | --- | --- |
 | MCP URL | `https://dev.mcp.gabriel-esparza.com/mcp/` | `https://mcp.gabriel-esparza.com/mcp/` |
-| Claude Code client id (`ClaudeCodeClientId` output) | `6giq64ctd72hqras9tb6udlkph` | *(after first prod deploy)* |
-| Claude hosted client id (`ClaudeHostedClientId` output) | `1l5s2dpcaq6rqptf4toil9dmsg` | *(after first prod deploy)* |
-| Hosted UI | `https://messaging-mcp-dev.auth.us-west-2.amazoncognito.com` | *(after first prod deploy)* |
+| Claude Code client id (`ClaudeCodeClientId` output) | `6giq64ctd72hqras9tb6udlkph` | `csorma81n5c73hpmap2kes337` |
+| Claude hosted client id (`ClaudeHostedClientId` output) | `1l5s2dpcaq6rqptf4toil9dmsg` | `4banpj0uq14bfe7a5vs8g374j6` |
+| Hosted UI | `https://messaging-mcp-dev.auth.us-west-2.amazoncognito.com` | `https://messaging-mcp-prod.auth.us-west-2.amazoncognito.com` |
 
 Client ids are public by design (PKCE public clients); the security is in the
 exact-match redirect URIs, PKCE, TOTP MFA, and 15-minute access tokens.

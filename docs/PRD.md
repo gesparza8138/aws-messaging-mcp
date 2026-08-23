@@ -647,7 +647,7 @@ Assumptions: single owner, ~5,000 MCP requests/month, ~300 emails, ~200 SMS, ~50
 | Component | Unit price | Usage | Est. / month |
 | --- | --- | --- | --- |
 | Cognito (Essentials) | $0.015 / MAU after 10k free | 1–2 MAU | $0.00 |
-| CloudFront Free plan (incl. WAF 5 rules, TLS, Route 53 DNS) | $0 ≤ 1M req / 100 GB | 5k req | $0.00 |
+| CloudFront Free plan (prod distribution + web ACL, TLS, CloudFront Functions) | $0 ≤ 1M req / 100 GB | 5k req | $0.00 |
 | Lambda | 1M req + 400k GB-s always free | 5k req | $0.00 |
 | DynamoDB on-demand | 25 GB + 2.5M reads free | trivial | $0.00 |
 | S3 media bucket | 5 GB free (12 mo), then $0.023 / GB | < 100 MB | $0.00 |
@@ -657,7 +657,7 @@ Assumptions: single owner, ~5,000 MCP requests/month, ~300 emails, ~200 SMS, ~50
 | SSM Parameter Store (standard) | free | 2 params | $0.00 |
 | CloudWatch Logs / Metrics / X-Ray | free tiers | small | $0.00 |
 | ACM certificate | free | 1 | $0.00 |
-| Route 53 hosted zone | included in CF plan, else $0.50 | 1 | $0.00–0.50 |
+| Route 53 hosted zones (root + `mcp`) | $0.50 each (not Free-plan eligible) | 2 | $1.00 |
 | Domain registration | ~$12–15 / year | 1 | ~$1.00 |
 | **Infrastructure subtotal** | | | **≈ $0–1.50** |
 | SES outbound | $0.10 / 1,000 | 300 | $0.03 |
@@ -792,6 +792,7 @@ claude.ai: edit the connector → request headers → `Authorization: Bearer <to
 | 2026-08-22 | Single AWS account for both stages; delegate `mcp.gabriel-esparza.com` from GoDaddy to Route 53 rather than moving the domain | Keeps existing GoDaddy DNS/email untouched; Route 53 zone lets CloudFormation manage certs and records |
 | 2026-08-22 | Email sender: `@gabriel-esparza.com` in both stages, `mcp-dev@` vs `mcp@`; DKIM at GoDaddy, MAIL FROM subdomains in Route 53; dev stays in SES sandbox | No mail hosted on the domain, so SES can own SPF/DMARC; sandbox doubles as dev recipient restriction |
 | 2026-08-22 | Repository is **public**, not private; the AWS account ID and the owner's phone number are kept out of the repo and stored as GitHub **secrets** (masked in Actions logs — variables are not masked) | GitHub Free gates rulesets and environment protection rules (the prod approval gate, which is part of the AWS security boundary via OIDC `environment:prod` trust) to public repos; required reviewers on private repos need Enterprise. Public also enables secret scanning push protection and CodeQL at no cost |
+| 2026-08-23 | Prod distribution + web ACL subscribed to the CloudFront **Free** flat-rate plan via `pricing-plan-manager` (plan forbids restricted price classes, so `PriceClass` is unset; the plan requires the ACL to protect only the subscribed distribution, so dev has no ACL). Hosted zones were rejected for the Free tier and stay pay-as-you-go ($0.50/month each) | Owner decision G12; cost model §14 updated |
 | 2026-08-23 | Edge access control moves from WAF rules to a **CloudFront Function** (viewer-request IP allow-list with the `/files/*` exemption; list in SSM, applied live by `update-my-ip.sh`); the WAF web ACL stays attached to prod only, empty, for flat-rate plan eligibility; distributions are IPv4-only | The Free plan's WAF supports only managed rules, rate limiting, and geo blocking - an IP-set allow-list or path match makes the ACL (and its distribution) ineligible, which surfaced at the first `CreateSubscription`. CloudFront Functions are included in the plan; PRD 4.2 had listed this as the alternative |
 | 2026-08-22 | M1 auth spike outcomes: R2 resolved in `direct` mode (fronted metadata kept as a flag), R3 resolved, R7 = IP allow-list + `update-my-ip.sh` + CI self-registration, R8 = Free plan on **prod** via `pricing-plan-manager`; refresh proven (hosted-bridge call succeeded 17.8 min after the 15-min access token was issued); TOTP enrolment observed at first login (the per-user MFA list stays empty on MFA-required pools — API quirk, not a gap) | Spike ran against the deployed dev stack from Claude Code, Claude Desktop, and a delayed hosted call |
 | 2026-08-22 | Hosted-bridge compatibility: the `claude-hosted` client registers both `claude.ai` and `claude.com` callbacks, and the server treats `/mcp` and `/mcp/` identically with redirects disabled (the bridge posts without a trailing slash and a Starlette redirect would have pointed it at the raw Function URL) | Observed in server logs during E3; both are now covered by tests |

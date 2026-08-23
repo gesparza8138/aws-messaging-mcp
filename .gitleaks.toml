@@ -7,4 +7,4 @@ useDefault = true
 
 [allowlist]
 description = "Cognito public OAuth client ids (PKCE public clients, not secrets; PRD 6.2)"
-regexes = ['''6giq64ctd72hqras9tb6udlkph''', '''1l5s2dpcaq6rqptf4toil9dmsg''']
+regexes = ['''6giq64ctd72hqras9tb6udlkph''', '''1l5s2dpcaq6rqptf4toil9dmsg''', '''csorma81n5c73hpmap2kes337''', '''4banpj0uq14bfe7a5vs8g374j6''']
