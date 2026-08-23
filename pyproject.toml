@@ -8,19 +8,26 @@ license = "MIT"
 license-files = ["LICENSE"]
 authors = [{ name = "Gabriel Esparza", email = "esparza.gabriel@gmail.com" }]
 dependencies = [
+    "aws-lambda-powertools>=3.7",
     # SendRcsMessage and the other EUM v2 RCS operations first appear in 1.43.37.
     "boto3>=1.43.37",
+    "fastapi>=0.115",
+    "mcp>=1.10",
+    "pyjwt[crypto]>=2.10",
+    "uvicorn>=0.34",
 ]
 
 [dependency-groups]
 dev = [
     "bandit>=1.8",
+    "httpx>=0.28",
     "cfn-lint>=1.38",
     "mypy>=1.17",
     "pre-commit>=4.2",
     "pytest>=8.4",
     "pytest-cov>=6.2",
     "ruff>=0.12",
+    "boto3-stubs[ssm]>=1.43",
 ]
 
 [build-system]

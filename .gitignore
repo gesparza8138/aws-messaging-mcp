@@ -27,3 +27,4 @@ node_modules/
 # Local environment
 .env
 .env.*
+coverage.json
