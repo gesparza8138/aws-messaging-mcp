@@ -59,6 +59,12 @@ Parameters:
     Type: String
     Default: esparza.gabriel@gmail.com
     Description: SNS subscription for operational alarms.
+  AllowedCidrs:
+    Type: String
+    Description: >-
+      Comma-separated IPv4 CIDRs allowed to reach everything except /files/*
+      (Anthropic egress plus owner IPs). The deploy workflows read it from SSM
+      /messaging-mcp/edge/allowed-cidrs; scripts/update-my-ip.sh maintains it.
   ReservedConcurrency:
     Type: Number
     Default: 0
@@ -311,6 +317,55 @@ Resources:
       # Restricts this grant to calls arriving via the function URL.
       InvokedViaFunctionUrl: true
 
+  # Default-deny IP allow-list (PRD 4.1 step 2) as a viewer-request function:
+  # the Free plan's WAF cannot express IP-set or path rules, and CloudFront
+  # Functions are included. Signed-URL downloads under /files/* are exempt.
+  IpAllowListFunction:
+    Type: AWS::CloudFront::Function
+    Properties:
+      Name: !Sub aws-messaging-mcp-${Stage}-ip-allowlist
+      AutoPublish: true
+      FunctionConfig:
+        Comment: Allow listed IPv4 CIDRs everywhere; allow everyone under /files/.
+        Runtime: cloudfront-js-2.0
+      FunctionCode: !Sub |
+        var ALLOW = '${AllowedCidrs}'.split(',');
+        function ip2int(ip) {
+          var p = ip.split('.');
+          if (p.length !== 4) return null;
+          var n = 0;
+          for (var i = 0; i < 4; i++) {
+            var o = parseInt(p[i], 10);
+            if (isNaN(o) || o < 0 || o > 255) return null;
+            n = n * 256 + o;
+          }
+          return n;
+        }
+        function inCidr(ip, cidr) {
+          var parts = cidr.trim().split('/');
+          var base = ip2int(parts[0]);
+          var addr = ip2int(ip);
+          var bits = parts.length > 1 ? parseInt(parts[1], 10) : 32;
+          if (base === null || addr === null || isNaN(bits)) return false;
+          if (bits <= 0) return true;
+          var block = Math.pow(2, 32 - bits);
+          return Math.floor(addr / block) === Math.floor(base / block);
+        }
+        function handler(event) {
+          var request = event.request;
+          if (request.uri.indexOf('/files/') === 0) return request;
+          var ip = event.viewer.ip;
+          for (var i = 0; i < ALLOW.length; i++) {
+            if (ALLOW[i] && inCidr(ip, ALLOW[i])) return request;
+          }
+          return {
+            statusCode: 403,
+            statusDescription: 'Forbidden',
+            headers: { 'content-type': { value: 'application/json' } },
+            body: '{"error":"forbidden"}'
+          };
+        }
+
   Distribution:
     Type: AWS::CloudFront::Distribution
     Metadata:
@@ -335,9 +390,12 @@ Resources:
         Enabled: true
         Comment: !Sub aws-messaging-mcp ${Stage}
         HttpVersion: http2and3
-        IPV6Enabled: true
+        # IPv4 only so the allow-list semantics are exact.
+        IPV6Enabled: false
         PriceClass: PriceClass_100
-        WebACLId: "{{resolve:ssm:/messaging-mcp/edge/web-acl-arn}}"
+        # The (empty) web ACL exists for flat-rate plan eligibility; only the
+        # prod distribution is subscribed, so only prod attaches it.
+        WebACLId: !If [IsProd, "{{resolve:ssm:/messaging-mcp/edge/web-acl-arn}}", !Ref AWS::NoValue]
         Aliases:
           - !If [IsProd, !Ref DomainName, !Sub "dev.${DomainName}"]
         ViewerCertificate:
@@ -362,6 +420,9 @@ Resources:
           # Managed policies: CachingDisabled + AllViewerExceptHostHeader.
           CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad
           OriginRequestPolicyId: b689b0a8-53d0-40ab-baf2-68738e2966ac
+          FunctionAssociations:
+            - EventType: viewer-request
+              FunctionARN: !GetAtt IpAllowListFunction.FunctionMetadata.FunctionARN
 
   DnsRecordA:
     Type: AWS::Route53::RecordSet
@@ -369,16 +430,6 @@ Resources:
       HostedZoneId: "{{resolve:ssm:/messaging-mcp/edge/hosted-zone-id}}"
       Name: !If [IsProd, !Ref DomainName, !Sub "dev.${DomainName}"]
       Type: A
-      AliasTarget:
-        DNSName: !GetAtt Distribution.DomainName
-        HostedZoneId: Z2FDTNDATAQYW2
-
-  DnsRecordAaaa:
-    Type: AWS::Route53::RecordSet
-    Properties:
-      HostedZoneId: "{{resolve:ssm:/messaging-mcp/edge/hosted-zone-id}}"
-      Name: !If [IsProd, !Ref DomainName, !Sub "dev.${DomainName}"]
-      Type: AAAA
       AliasTarget:
         DNSName: !GetAtt Distribution.DomainName
         HostedZoneId: Z2FDTNDATAQYW2
