@@ -1,0 +1,79 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  aws-messaging-mcp shared End User Messaging resources: the single toll-free
+  number (leased ~$2/month, serves both stages) and the protect configuration.
+  Deployed once from the owner's workstation, like ses-domain. The toll-free
+  verification registration (carrier form) has no CloudFormation surface and
+  is submitted in the console - see docs/setup/aws-prerequisites.md section 2.
+
+Resources:
+  TollFreeNumber:
+    Type: AWS::SMSVOICE::PhoneNumber
+    # Retain + deletion protection: the number's carrier verification is not
+    # reproducible by a re-create, and releasing a leased number on rollback
+    # would silently break every send.
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      IsoCountryCode: US
+      NumberType: TOLL_FREE
+      NumberCapabilities: [SMS, MMS]
+      DeletionProtectionEnabled: true
+      SelfManagedOptOutsEnabled: false
+      MandatoryKeywords:
+        STOP:
+          Message: >-
+            You are opted out of messages from Gabriel Esparza and will
+            receive no further texts from this number.
+        HELP:
+          Message: >-
+            This number sends one-off personal messages from Gabriel Esparza.
+            Details: https://mcp.gabriel-esparza.com/opt-in - reply STOP to
+            opt out.
+
+  # Defense in depth only: rules below allow US; destinations outside +1 are
+  # rejected first by the DestinationCountry guardrail in code (M3 PR B),
+  # because countries not listed here follow the account defaults rather
+  # than being blocked.
+  ProtectConfiguration:
+    Type: AWS::SMSVOICE::ProtectConfiguration
+    Properties:
+      DeletionProtectionEnabled: true
+      CountryRuleSet:
+        SMS:
+          - { CountryCode: US, ProtectStatus: ALLOW }
+        MMS:
+          - { CountryCode: US, ProtectStatus: ALLOW }
+
+  # The app stacks and deploy workflows resolve these from SSM so no ARNs or
+  # numbers live in the repo (public-repo hygiene).
+  PhoneArnParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: /messaging-mcp/eum/phone-arn
+      Type: String
+      Value: !GetAtt TollFreeNumber.Arn
+  PhoneIdParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: /messaging-mcp/eum/phone-id
+      Type: String
+      Value: !GetAtt TollFreeNumber.PhoneNumberId
+  PhoneNumberParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: /messaging-mcp/eum/phone-number
+      Type: String
+      Value: !GetAtt TollFreeNumber.PhoneNumber
+  ProtectConfigurationIdParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: /messaging-mcp/eum/protect-configuration-id
+      Type: String
+      Value: !GetAtt ProtectConfiguration.ProtectConfigurationId
+
+Outputs:
+  PhoneNumberId:
+    Value: !GetAtt TollFreeNumber.PhoneNumberId
+  ProtectConfigurationId:
+    Value: !GetAtt ProtectConfiguration.ProtectConfigurationId

@@ -60,7 +60,48 @@ func NewHandler(cfg Config) http.Handler {
 	// Both spellings dispatch to the same handler; the MCP handler ignores the path.
 	mux.Handle("/mcp", cfg.MCP)
 	mux.Handle("/mcp/", cfg.MCP)
+	// Public informational pages (edge allow-list exempts them): the landing
+	// page and the SMS opt-in disclosure that the toll-free verification form
+	// references (PRD M3-5).
+	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, _ *http.Request) {
+		writeHTML(w, indexPage())
+	})
+	mux.HandleFunc("GET /opt-in", func(w http.ResponseWriter, _ *http.Request) {
+		writeHTML(w, optInPage(cfg.Settings.OptInPhoneNumber))
+	})
 	return authMiddleware(cfg, mux)
+}
+
+func writeHTML(w http.ResponseWriter, body string) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(body))
+}
+
+func indexPage() string {
+	return `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Gabriel Esparza — personal messaging service</title></head><body>
+<h1>Personal messaging service</h1>
+<p>This is a private, single-owner notification service operated by Gabriel Esparza.
+It sends one-off transactional email and text messages on the owner's behalf —
+reminders, confirmations, and links to documents the recipient asked for.
+There is no marketing, no recurring campaigns, and no public sign-up.</p>
+<p><a href="/opt-in">SMS opt-in and opt-out details</a></p>
+</body></html>`
+}
+
+func optInPage(phoneNumber string) string {
+	from := "our toll-free number"
+	if phoneNumber != "" {
+		from = phoneNumber
+	}
+	return `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>SMS opt-in — Gabriel Esparza</title></head><body>
+<h1>SMS opt-in</h1>
+<p>By asking Gabriel Esparza — in person, by phone, or in writing — to send you
+information by text, you agree to receive a one-time message from ` + from + `.
+Message and data rates may apply. Message frequency varies with your requests;
+there are no recurring messages.</p>
+<p>Reply <strong>STOP</strong> to opt out at any time, or <strong>HELP</strong> for help.</p>
+</body></html>`
 }
 
 func authMiddleware(cfg Config, next http.Handler) http.Handler {
@@ -71,7 +112,7 @@ func authMiddleware(cfg Config, next http.Handler) http.Handler {
 			return
 		}
 		path := r.URL.Path
-		if path == "/healthz" || strings.HasPrefix(path, "/.well-known/") {
+		if path == "/healthz" || path == "/" || path == "/opt-in" || strings.HasPrefix(path, "/.well-known/") {
 			next.ServeHTTP(w, r)
 			return
 		}

@@ -145,6 +145,29 @@ func TestOriginSecretEnforced(t *testing.T) {
 	}
 }
 
+// The landing and opt-in pages are public: no bearer token, HTML content,
+// and the opt-in text degrades gracefully while no number is configured
+// (PRD M3-5). The origin secret is still enforced (TestOriginSecretEnforced
+// covers every route through the same middleware).
+func TestPublicPages(t *testing.T) {
+	f := newFixture(t, metadataDirect)
+	for path, want := range map[string]string{"/": "/opt-in", "/opt-in": "our toll-free number"} {
+		resp := f.do(t, http.MethodGet, path, "", "")
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK || !strings.Contains(resp.Header.Get("Content-Type"), "text/html") {
+			t.Fatalf("%s: status %d type %q", path, resp.StatusCode, resp.Header.Get("Content-Type"))
+		}
+		if !strings.Contains(string(body), want) {
+			t.Fatalf("%s: body lacks %q", path, want)
+		}
+	}
+	// Unknown root-adjacent paths still require auth ("/" must not swallow them).
+	if resp := f.do(t, http.MethodGet, "/anything", "", ""); resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("/anything: %d, want 401", resp.StatusCode)
+	}
+}
+
 func TestUnauthenticated401Contract(t *testing.T) {
 	f := newFixture(t, metadataDirect)
 	for _, path := range []string{"/mcp/", "/mcp"} {

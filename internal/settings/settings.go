@@ -59,6 +59,10 @@ type Settings struct {
 	SESConfigurationSet string
 	// SESReplyTo is the default Reply-To when the caller omits one.
 	SESReplyTo string
+	// OptInPhoneNumber is the public toll-free number shown on /opt-in
+	// (E.164; empty until the eum stack exists — the page falls back to a
+	// generic phrase). Kept out of the repo, injected from SSM.
+	OptInPhoneNumber string
 	// SESSenderAddresses is the sender allow-list (PRD §8).
 	SESSenderAddresses []string
 	// RecipientAllowList restricts recipients when non-empty ("test mode").
@@ -107,6 +111,7 @@ func FromEnv(lookup Lookup) Settings {
 		BreakGlassScopes:    splitCSV(get("BREAK_GLASS_SCOPES", "msg/read")),
 		SESConfigurationSet: get("SES_CONFIGURATION_SET", ""),
 		SESReplyTo:          get("SES_REPLY_TO", ""),
+		OptInPhoneNumber:    get("OPT_IN_PHONE_NUMBER", ""),
 		SESSenderAddresses:  splitCSV(get("SES_SENDER_ADDRESSES", "")),
 		RecipientAllowList:  splitCSV(get("RECIPIENT_ALLOW_LIST", "")),
 		MaxRecipients:       intOr(get("MAX_RECIPIENTS", ""), 10),
