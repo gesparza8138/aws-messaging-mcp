@@ -94,8 +94,18 @@ jobs:
         if: inputs.execute
         run: |
           aws cloudformation execute-change-set --change-set-name "${{ steps.changeset.outputs.arn }}"
-          aws cloudformation wait stack-update-complete --stack-name aws-messaging-mcp-dev 2>/dev/null \
-            || aws cloudformation wait stack-create-complete --stack-name aws-messaging-mcp-dev
+          # Poll the stack directly: the create/update waiters do not fail on
+          # each other's terminal states and would block for up to an hour.
+          for _ in $(seq 1 120); do
+            STATUS=$(aws cloudformation describe-stacks --stack-name aws-messaging-mcp-dev \
+              --query 'Stacks[0].StackStatus' --output text)
+            case "$STATUS" in
+              CREATE_COMPLETE|UPDATE_COMPLETE) break ;;
+              *IN_PROGRESS) sleep 15 ;;
+              *) echo "stack ended in $STATUS"; exit 1 ;;
+            esac
+          done
+          [ "$STATUS" = "CREATE_COMPLETE" ] || [ "$STATUS" = "UPDATE_COMPLETE" ] || { echo "timed out in $STATUS"; exit 1; }
           aws cloudformation describe-stacks --stack-name aws-messaging-mcp-dev \
             --query 'Stacks[0].Outputs' --output table >> "$GITHUB_STEP_SUMMARY"
 
