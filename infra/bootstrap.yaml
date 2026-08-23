@@ -14,6 +14,14 @@ Parameters:
     Type: String
     Default: aws-messaging-mcp
     Description: Repository name.
+  GitHubOwnerId:
+    Type: String
+    Default: "24397492"
+    Description: Numeric ID of the owner account, embedded in the OIDC sub claim.
+  GitHubRepoId:
+    Type: String
+    Default: "1343248725"
+    Description: Numeric ID of the repository, embedded in the OIDC sub claim.
 
 Resources:
   GitHubOIDCProvider:
@@ -195,7 +203,7 @@ Resources:
             Condition:
               StringEquals:
                 token.actions.githubusercontent.com:aud: sts.amazonaws.com
-                token.actions.githubusercontent.com:sub: !Sub repo:${GitHubOwner}/${GitHubRepo}:environment:dev
+                token.actions.githubusercontent.com:sub: !Sub repo:${GitHubOwner}@${GitHubOwnerId}/${GitHubRepo}@${GitHubRepoId}:environment:dev
       Policies:
         - PolicyName: deploy-dev
           PolicyDocument:
@@ -259,7 +267,7 @@ Resources:
             Condition:
               StringEquals:
                 token.actions.githubusercontent.com:aud: sts.amazonaws.com
-                token.actions.githubusercontent.com:sub: !Sub repo:${GitHubOwner}/${GitHubRepo}:environment:prod
+                token.actions.githubusercontent.com:sub: !Sub repo:${GitHubOwner}@${GitHubOwnerId}/${GitHubRepo}@${GitHubRepoId}:environment:prod
       Policies:
         - PolicyName: deploy-prod
           PolicyDocument:
