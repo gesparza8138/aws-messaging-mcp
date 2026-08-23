@@ -96,8 +96,8 @@ uv run python scripts/rotate-secret.py --stage dev   # origin secret + break-gla
 
 Then deploy through GitHub Actions only:
 
-1. `gh workflow run deploy-dev.yml` - builds the arm64 artifact, uploads it
-   content-hash-keyed, creates a change set, and prints the summary to the
+1. `gh workflow run deploy-dev.yml` - builds the static arm64 `bootstrap` binary
+   (`provided.al2023`, no layer), uploads it content-hash-keyed, creates a change set, and prints the summary to the
    job summary **without executing**.
 2. Review, then `gh workflow run deploy-dev.yml -f execute=true` to apply.
 

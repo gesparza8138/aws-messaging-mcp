@@ -19,10 +19,6 @@ Parameters:
   CodeKey:
     Type: String
     Description: Artifact-bucket key of the application zip (content-hash keyed).
-  LwaLayerArn:
-    Type: String
-    Default: arn:aws:lambda:us-west-2:753240598075:layer:LambdaAdapterLayerArm64:25
-    Description: AWS Lambda Web Adapter public layer (arm64).
   CognitoDomainPrefix:
     Type: String
     AllowedPattern: ^(?!.*(aws|amazon|cognito))[a-z0-9-]{1,63}$
@@ -247,22 +243,20 @@ Resources:
             reason: No VPC by design; see checkov CKV_AWS_117 justification.
     Properties:
       FunctionName: !Sub aws-messaging-mcp-${Stage}
-      Runtime: python3.13
+      # Single static Go binary named bootstrap (cmd/server); no layer.
+      Runtime: provided.al2023
       Architectures: [arm64]
-      MemorySize: 512
+      MemorySize: 256
       Timeout: 30
       ReservedConcurrentExecutions: !If [HasReservedConcurrency, !Ref ReservedConcurrency, !Ref AWS::NoValue]
       Role: !GetAtt ExecutionRole.Arn
-      Handler: run.sh
-      Layers: [!Ref LwaLayerArn]
+      Handler: bootstrap
       Code:
         S3Bucket: !Sub aws-messaging-mcp-artifacts-${AWS::AccountId}
         S3Key: !Ref CodeKey
       TracingConfig: { Mode: Active }
       Environment:
         Variables:
-          AWS_LAMBDA_EXEC_WRAPPER: /opt/bootstrap
-          PORT: "8000"
           STAGE: !Ref Stage
           MCP_RESOURCE_URL: !If
             - IsProd

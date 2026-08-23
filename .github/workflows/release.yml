@@ -24,18 +24,15 @@ jobs:
       key: ${{ steps.build.outputs.key }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
-      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
-          enable-cache: true
-      - name: build artifact (arm64 zip with Lambda Web Adapter entrypoint)
+          go-version-file: go.mod
+
+      - name: build artifact (static arm64 bootstrap binary)
         id: build
         run: |
-          uv export --no-dev --no-emit-project --format requirements-txt --no-hashes -o requirements.txt
-          pip install --quiet --platform manylinux2014_aarch64 --implementation cp \
-            --python-version 3.13 --only-binary=:all: --target build -r requirements.txt
-          cp -r src/aws_messaging_mcp build/
-          install -m 755 scripts/lambda-run.sh build/run.sh
-          (cd build && zip -qr ../app.zip .)
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags="-s -w" -o bootstrap ./cmd/server
+          zip -qj app.zip bootstrap
           echo "key=app-$(sha256sum app.zip | cut -c1-16).zip" >> "$GITHUB_OUTPUT"
       - name: publish GitHub Release
         env:
