@@ -128,7 +128,7 @@ RCS is the most paperwork-heavy channel and the most likely to slip, which is wh
 The stack creates the user pool; create the single user afterwards (self-signup is disabled):
 
 ```bash
-./scripts/bootstrap-user.sh --stage prod --email esparza.gabriel@gmail.com
+go run ./cmd/ops bootstrap-user --stage prod --email esparza.gabriel@gmail.com
 # → creates the user with a temporary password, forces reset on first hosted-UI login, and requires TOTP enrolment
 ```
 

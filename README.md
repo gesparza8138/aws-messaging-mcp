@@ -17,7 +17,7 @@ lets Claude Code, Claude Desktop, and claude.ai Routines send email (Amazon SES)
 ```mermaid
 flowchart LR
     C[Claude clients] -- Bearer JWT --> W[WAF + CloudFront]
-    W --> L[Lambda: FastAPI + FastMCP]
+    W --> L[Lambda: Go + MCP SDK]
     L -.JWKS.-> K[Cognito]
     L --> SES[SES v2]
     L --> EUM[End User Messaging]
@@ -38,13 +38,15 @@ Full detail: [docs/PRD.md](docs/PRD.md) §4.
 
 ## Development
 
-Requires Python 3.13 and [uv](https://docs.astral.sh/uv/).
+Requires Go (version in `go.mod`), `golangci-lint`, and [uv](https://docs.astral.sh/uv/) (only as a
+runner for the IaC scanners).
 
 ```bash
-uv sync            # create the venv and install locked dependencies
-make test          # unit tests with coverage gate
-make lint          # ruff check + format check
-make typecheck     # mypy --strict
+make test          # go test -race with coverage gates
+make lint          # gofmt + golangci-lint
+make vet           # go vet
+make build         # static arm64 Lambda binary in dist/
+make dev           # local server on :8000
 make iac-lint      # cfn-lint + checkov + cfn_nag over infra/
 ```
 

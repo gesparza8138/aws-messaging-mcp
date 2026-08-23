@@ -91,7 +91,7 @@ aws ssm put-parameter --region us-west-2 --name /messaging-mcp/edge/ip-set-arn  
 Per-stage secrets must exist before the first deploy:
 
 ```bash
-uv run python scripts/rotate-secret.py --stage dev   # origin secret + break-glass token
+go run ./cmd/ops rotate-secret --stage dev   # origin secret + break-glass token
 ```
 
 Then deploy through GitHub Actions only:
@@ -107,7 +107,7 @@ workflow and passed as NoEcho parameters, never committed. After the stack is
 up, create the owner user:
 
 ```bash
-./scripts/bootstrap-user.sh --stage dev --email <owner-email>
+go run ./cmd/ops bootstrap-user --stage dev --email <owner-email>
 ```
 
 ## Rollback
