@@ -79,19 +79,26 @@ jobs:
           echo "allowed_cidrs=$(aws ssm get-parameter --name /messaging-mcp/edge/allowed-cidrs --query Parameter.Value --output text)" >> "$GITHUB_OUTPUT"
       - name: deploy
         run: |
-          PARAMS=$(jq -r 'join(" ")' infra/params/prod.json)
-          # shellcheck disable=SC2086
+          # A JSON parameter file sidesteps the CLI's Key=Value parser, which
+          # mangles values containing commas (the CIDR list).
+          jq -n --slurpfile base <(jq '[.[] | split("=") | {ParameterKey: .[0], ParameterValue: (.[1:] | join("="))}]' infra/params/prod.json) \
+            --arg key "${{ needs.release.outputs.key }}" \
+            --arg os "${{ steps.secrets.outputs.origin_secret }}" \
+            --arg bg "${{ steps.secrets.outputs.break_glass_sha256 }}" \
+            --arg cidrs "${{ steps.secrets.outputs.allowed_cidrs }}" \
+            '$base[0] + [
+              {ParameterKey: "CodeKey", ParameterValue: $key},
+              {ParameterKey: "OriginSecret", ParameterValue: $os},
+              {ParameterKey: "BreakGlassSha256", ParameterValue: $bg},
+              {ParameterKey: "AllowedCidrs", ParameterValue: $cidrs}
+            ]' > params.json
           aws cloudformation deploy \
             --stack-name aws-messaging-mcp-prod \
             --template-file infra/app.yaml \
             --role-arn "arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/aws-messaging-mcp-cfn-service" \
             --capabilities CAPABILITY_NAMED_IAM \
             --no-fail-on-empty-changeset \
-            --parameter-overrides $PARAMS \
-              "CodeKey=${{ needs.release.outputs.key }}" \
-              "OriginSecret=${{ steps.secrets.outputs.origin_secret }}" \
-              "BreakGlassSha256=${{ steps.secrets.outputs.break_glass_sha256 }}"
-              "AllowedCidrs=${{ steps.secrets.outputs.allowed_cidrs }}"
+            --parameter-overrides file://params.json
           aws cloudformation describe-stacks --stack-name aws-messaging-mcp-prod \
             --query 'Stacks[0].Outputs' --output table >> "$GITHUB_STEP_SUMMARY"
       - name: smoke test (unauthenticated contracts only)

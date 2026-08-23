@@ -67,19 +67,26 @@ jobs:
       - name: create change set
         id: changeset
         run: |
-          PARAMS=$(jq -r 'join(" ")' infra/params/dev.json)
-          # shellcheck disable=SC2086
+          # A JSON parameter file sidesteps the CLI's Key=Value parser, which
+          # mangles values containing commas (the CIDR list).
+          jq -n --slurpfile base <(jq '[.[] | split("=") | {ParameterKey: .[0], ParameterValue: (.[1:] | join("="))}]' infra/params/dev.json) \
+            --arg key "${{ steps.build.outputs.key }}" \
+            --arg os "${{ steps.secrets.outputs.origin_secret }}" \
+            --arg bg "${{ steps.secrets.outputs.break_glass_sha256 }}" \
+            --arg cidrs "${{ steps.secrets.outputs.allowed_cidrs }}" \
+            '$base[0] + [
+              {ParameterKey: "CodeKey", ParameterValue: $key},
+              {ParameterKey: "OriginSecret", ParameterValue: $os},
+              {ParameterKey: "BreakGlassSha256", ParameterValue: $bg},
+              {ParameterKey: "AllowedCidrs", ParameterValue: $cidrs}
+            ]' > params.json
           aws cloudformation deploy \
             --stack-name aws-messaging-mcp-dev \
             --template-file infra/app.yaml \
             --role-arn "arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/aws-messaging-mcp-cfn-service" \
             --capabilities CAPABILITY_NAMED_IAM \
             --no-execute-changeset \
-            --parameter-overrides $PARAMS \
-              "CodeKey=${{ steps.build.outputs.key }}" \
-              "OriginSecret=${{ steps.secrets.outputs.origin_secret }}" \
-              "BreakGlassSha256=${{ steps.secrets.outputs.break_glass_sha256 }}"
-              "AllowedCidrs=${{ steps.secrets.outputs.allowed_cidrs }}"
+            --parameter-overrides file://params.json
           ARN=$(aws cloudformation list-change-sets --stack-name aws-messaging-mcp-dev \
             --query 'Summaries | sort_by(@, &CreationTime) | [-1].ChangeSetId' --output text)
           echo "arn=$ARN" >> "$GITHUB_OUTPUT"
