@@ -82,6 +82,21 @@ Parameters:
   MaxRecipients:
     Type: Number
     Default: 10
+  SmsMaxPrice:
+    Type: String
+    Default: "0.05"
+    Description: Per-message USD ceiling for SMS/MMS (PRD 8).
+  OriginationPhoneArn:
+    Type: String
+    Default: ""
+    Description: >-
+      ARN of the shared toll-free number. The deploy workflows read it from
+      SSM /messaging-mcp/eum/phone-arn once the eum stack exists; while empty
+      the SMS tools stay unregistered and no send permission is granted.
+  ProtectConfigurationId:
+    Type: String
+    Default: ""
+    Description: Read from SSM /messaging-mcp/eum/protect-configuration-id.
   AllowedCidrs:
     Type: String
     Description: >-
@@ -102,6 +117,8 @@ Conditions:
   IsProd: !Equals [!Ref Stage, prod]
   IsDev: !Not [!Equals [!Ref Stage, prod]]
   HasReservedConcurrency: !Not [!Equals [!Ref ReservedConcurrency, 0]]
+  HasEumPhone: !Not [!Equals [!Ref OriginationPhoneArn, ""]]
+  HasProtectConfig: !Not [!Equals [!Ref ProtectConfigurationId, ""]]
 
 Resources:
   UserPool:
@@ -299,6 +316,117 @@ Resources:
         - Id: log-group
           Arn: !GetAtt SesEventsLogGroup.Arn
 
+  EumEventsLogGroup:
+    Type: AWS::Logs::LogGroup
+    Metadata:
+      checkov:
+        skip:
+          - id: CKV_AWS_158
+            comment: Default SSE suffices; events carry message ids and delivery metadata, not bodies (PRD S5).
+    Properties:
+      LogGroupName: !Sub /aws-messaging-mcp/${Stage}/eum-events
+      RetentionInDays: !If [IsProd, 90, 14]
+
+  EumEventsRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub aws-messaging-mcp-${Stage}-eum-events
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: sms-voice.amazonaws.com }
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+      Policies:
+        - PolicyName: write-events
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:DescribeLogStreams
+                  - logs:PutLogEvents
+                Resource: !Sub ${EumEventsLogGroup.Arn}:*
+
+  EumConfigurationSet:
+    Type: AWS::SMSVOICE::ConfigurationSet
+    Properties:
+      ConfigurationSetName: !Sub aws-messaging-mcp-${Stage}-sms
+      ProtectConfigurationId: !If [HasProtectConfig, !Ref ProtectConfigurationId, !Ref AWS::NoValue]
+      EventDestinations:
+        - EventDestinationName: cloudwatch-logs
+          Enabled: true
+          MatchingEventTypes: [ALL]
+          CloudWatchLogsDestination:
+            IamRoleArn: !GetAtt EumEventsRole.Arn
+            LogGroupArn: !GetAtt EumEventsLogGroup.Arn
+
+  MediaBucket:
+    Type: AWS::S3::Bucket
+    Metadata:
+      checkov:
+        skip:
+          - id: CKV_AWS_18
+            comment: Access logging adds a second bucket for a private, single-writer media staging store; deferred.
+          - id: CKV_AWS_21
+            comment: Versioning on a 7-day-lifecycle staging bucket only re-bills deleted media; objects are disposable by design.
+      cfn_nag:
+        rules_to_suppress:
+          - id: W35
+            reason: Media staging bucket is private, short-lived (7-day lifecycle), written only by the server.
+    Properties:
+      # Separate from the files bucket and never behind CloudFront (hard rule).
+      BucketName: !Sub aws-messaging-mcp-media-${AWS::AccountId}-${Stage}
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      LifecycleConfiguration:
+        Rules:
+          - Id: expire-media
+            Status: Enabled
+            ExpirationInDays: 7
+          - Id: abort-incomplete-multipart
+            Status: Enabled
+            AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 1
+
+  MediaBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref MediaBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: "*"
+            Action: "s3:*"
+            Resource:
+              - !GetAtt MediaBucket.Arn
+              - !Sub ${MediaBucket.Arn}/*
+            Condition:
+              Bool:
+                aws:SecureTransport: "false"
+          - Sid: EumReadsMedia
+            # End User Messaging fetches MediaUrls objects when sending MMS.
+            Effect: Allow
+            Principal: { Service: sms-voice.amazonaws.com }
+            Action: s3:GetObject
+            Resource: !Sub ${MediaBucket.Arn}/*
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+
   LogGroup:
     Type: AWS::Logs::LogGroup
     Metadata:
@@ -350,6 +478,31 @@ Resources:
                 Condition:
                   StringEquals:
                     ses:FromAddress: !Split [",", !Ref SesSenderAddresses]
+              - !If
+                - HasEumPhone
+                - Sid: SendSms
+                  Effect: Allow
+                  Action:
+                    - sms-voice:SendTextMessage
+                    - sms-voice:SendMediaMessage
+                  Resource:
+                    - !Ref OriginationPhoneArn
+                    - !Sub arn:${AWS::Partition}:sms-voice:${AWS::Region}:${AWS::AccountId}:configuration-set/${EumConfigurationSet}
+                - !Ref AWS::NoValue
+              - Sid: EumRead
+                Effect: Allow
+                Action: sms-voice:DescribePhoneNumbers
+                Resource: "*"
+              - Sid: ReadEumEventTrail
+                Effect: Allow
+                Action: logs:FilterLogEvents
+                Resource: !Sub ${EumEventsLogGroup.Arn}:*
+              - Sid: StageMedia
+                Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:GetObject
+                Resource: !Sub ${MediaBucket.Arn}/mms/*
               - Sid: SesRead
                 Effect: Allow
                 Action:
@@ -423,6 +576,13 @@ Resources:
           SES_CONFIGURATION_SET: !Ref SesConfigurationSet
           SES_REPLY_TO: !Ref SesReplyTo
           OPT_IN_PHONE_NUMBER: !Ref OptInPhoneNumber
+          EUM_CONFIGURATION_SET: !Ref EumConfigurationSet
+          # The public opt-in page shows the same number the server sends from.
+          ORIGINATION_IDENTITY: !Ref OptInPhoneNumber
+          PROTECT_CONFIGURATION_ID: !Ref ProtectConfigurationId
+          SMS_MAX_PRICE: !Ref SmsMaxPrice
+          MEDIA_BUCKET: !Ref MediaBucket
+          EUM_EVENTS_LOG_GROUP: !Sub /aws-messaging-mcp/${Stage}/eum-events
           SES_SENDER_ADDRESSES: !Ref SesSenderAddresses
           RECIPIENT_ALLOW_LIST: !Ref RecipientAllowList
           MAX_RECIPIENTS: !Ref MaxRecipients

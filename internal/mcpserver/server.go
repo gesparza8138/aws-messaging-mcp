@@ -18,11 +18,14 @@ import (
 // Version is stamped into the MCP server implementation info.
 const Version = "0.2.0"
 
-// Deps wires the tools to their backends. A nil SES leaves the email tools
-// unregistered (tests that only exercise the auth chain use this).
+// Deps wires the tools to their backends. A nil SES (or EUM) leaves that
+// tool family unregistered (tests that only exercise the auth chain use this).
 type Deps struct {
 	Settings settings.Settings
 	SES      awsclients.SES
+	EUM      awsclients.EUM
+	Media    awsclients.MediaStore
+	EventLog awsclients.EventLog
 	Limiter  *guardrails.Limiter
 }
 
@@ -72,6 +75,24 @@ func NewServer(d Deps) *mcp.Server {
 			Name:        "ses_get_account",
 			Description: "SES account status: sandbox/production, quotas; requires msg/read.",
 		}, d.getAccount())
+	}
+	if d.EUM != nil {
+		mcp.AddTool(server, &mcp.Tool{
+			Name:        "sms_send_text_message",
+			Description: "Send an SMS via AWS End User Messaging (SendTextMessage shape); requires msg/sms:send. Supports DryRun.",
+		}, d.sendTextMessage())
+		mcp.AddTool(server, &mcp.Tool{
+			Name:        "sms_send_media_message",
+			Description: "Send an MMS with images via AWS End User Messaging (SendMediaMessage shape); requires msg/sms:send. Supports DryRun.",
+		}, d.sendMediaMessage())
+		mcp.AddTool(server, &mcp.Tool{
+			Name:        "sms_describe_phone_numbers",
+			Description: "List the origination phone numbers; requires msg/read.",
+		}, d.describePhoneNumbers())
+		mcp.AddTool(server, &mcp.Tool{
+			Name:        "sms_get_message_status",
+			Description: "Delivery status for a MessageId from the event trail; requires msg/read.",
+		}, d.getMessageStatus())
 	}
 	return server
 }

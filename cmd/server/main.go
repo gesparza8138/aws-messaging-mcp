@@ -14,7 +14,10 @@ import (
 	"github.com/aws/aws-lambda-go/lambda"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/cloudwatchlogs"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
+	"github.com/aws/aws-sdk-go-v2/service/pinpointsmsvoicev2"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/sesv2"
 	"github.com/aws/aws-sdk-go-v2/service/ssm"
 
@@ -44,6 +47,13 @@ func main() {
 	deps := mcpserver.Deps{
 		Settings: s,
 		SES:      sesv2.NewFromConfig(awsCfg),
+	}
+	// SMS/MMS tools register only once the stage is configured for them
+	// (origination number allocated and wired via the eum stack).
+	if s.OriginationIdentity != "" {
+		deps.EUM = pinpointsmsvoicev2.NewFromConfig(awsCfg)
+		deps.Media = s3.NewFromConfig(awsCfg)
+		deps.EventLog = cloudwatchlogs.NewFromConfig(awsCfg)
 	}
 	if s.RateLimitTable != "" {
 		deps.Limiter = &guardrails.Limiter{

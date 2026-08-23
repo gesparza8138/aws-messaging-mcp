@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"sort"
 
+	"github.com/aws/aws-sdk-go-v2/service/pinpointsmsvoicev2"
 	"github.com/aws/aws-sdk-go-v2/service/sesv2"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -21,8 +22,8 @@ import (
 	"github.com/gesparza8138/aws-messaging-mcp/internal/settings"
 )
 
-// stubSES satisfies awsclients.SES so the email tools register; gendocs only
-// lists tools and never calls them.
+// stubSES and stubEUM satisfy the client interfaces so every tool family
+// registers; gendocs only lists tools and never calls them.
 type stubSES struct{}
 
 func (stubSES) SendEmail(context.Context, *sesv2.SendEmailInput, ...func(*sesv2.Options)) (*sesv2.SendEmailOutput, error) {
@@ -34,6 +35,20 @@ func (stubSES) ListEmailIdentities(context.Context, *sesv2.ListEmailIdentitiesIn
 }
 
 func (stubSES) GetAccount(context.Context, *sesv2.GetAccountInput, ...func(*sesv2.Options)) (*sesv2.GetAccountOutput, error) {
+	return nil, nil
+}
+
+type stubEUM struct{}
+
+func (stubEUM) SendTextMessage(context.Context, *pinpointsmsvoicev2.SendTextMessageInput, ...func(*pinpointsmsvoicev2.Options)) (*pinpointsmsvoicev2.SendTextMessageOutput, error) {
+	return nil, nil
+}
+
+func (stubEUM) SendMediaMessage(context.Context, *pinpointsmsvoicev2.SendMediaMessageInput, ...func(*pinpointsmsvoicev2.Options)) (*pinpointsmsvoicev2.SendMediaMessageOutput, error) {
+	return nil, nil
+}
+
+func (stubEUM) DescribePhoneNumbers(context.Context, *pinpointsmsvoicev2.DescribePhoneNumbersInput, ...func(*pinpointsmsvoicev2.Options)) (*pinpointsmsvoicev2.DescribePhoneNumbersOutput, error) {
 	return nil, nil
 }
 
@@ -49,7 +64,7 @@ func main() {
 
 func run(check bool, dir string) error {
 	ctx := context.Background()
-	server := mcpserver.NewServer(mcpserver.Deps{Settings: settings.Settings{}, SES: stubSES{}})
+	server := mcpserver.NewServer(mcpserver.Deps{Settings: settings.Settings{}, SES: stubSES{}, EUM: stubEUM{}})
 	clientTransport, serverTransport := mcp.NewInMemoryTransports()
 	serverSession, err := server.Connect(ctx, serverTransport, nil)
 	if err != nil {

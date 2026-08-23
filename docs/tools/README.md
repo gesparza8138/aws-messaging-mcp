@@ -8,3 +8,7 @@
 | [`ses_get_account`](ses_get_account.md) | SES account status: sandbox/production, quotas; requires msg/read. |
 | [`ses_list_email_identities`](ses_list_email_identities.md) | List verified SES sender identities; requires msg/read. |
 | [`ses_send_email`](ses_send_email.md) | Send an email via Amazon SES (sesv2 SendEmail shape); requires msg/email:send. Supports DryRun. |
+| [`sms_describe_phone_numbers`](sms_describe_phone_numbers.md) | List the origination phone numbers; requires msg/read. |
+| [`sms_get_message_status`](sms_get_message_status.md) | Delivery status for a MessageId from the event trail; requires msg/read. |
+| [`sms_send_media_message`](sms_send_media_message.md) | Send an MMS with images via AWS End User Messaging (SendMediaMessage shape); requires msg/sms:send. Supports DryRun. |
+| [`sms_send_text_message`](sms_send_text_message.md) | Send an SMS via AWS End User Messaging (SendTextMessage shape); requires msg/sms:send. Supports DryRun. |
