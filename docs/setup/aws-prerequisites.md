@@ -24,21 +24,11 @@ Fill this in as you go; these become `infra/params/{dev,prod}.json` values.
 
 ### 1.1 Domain identity (once, shared by both stages)
 
-`infra/app.yaml` (prod) creates `AWS::SES::EmailIdentity` for `gabriel-esparza.com` with Easy DKIM (RSA 2048) and outputs the three DKIM tokens. Because the root domain's DNS is at GoDaddy, add these by hand:
+Fully automated — the whole domain's DNS lives in Route 53 since M1, so there is nothing to do by hand. `infra/ses-domain.yaml` (deployed once from the workstation, like `bootstrap`) creates the `AWS::SES::EmailIdentity` for `gabriel-esparza.com` with Easy DKIM (RSA 2048) and writes every record into the root zone itself: the three DKIM CNAMEs, root SPF (`v=spf1 -all` — nothing sends as the bare domain), DMARC (`p=quarantine`, strict DKIM alignment, reports to the owner's mailbox), and the custom MAIL FROM (`bounce.mcp.gabriel-esparza.com`) with its MX and SPF records. SES shows **Verified** within minutes of the deploy.
 
-| Type | Host (GoDaddy "Name") | Value | Purpose |
-| --- | --- | --- | --- |
-| CNAME | `<token1>._domainkey` | `<token1>.dkim.amazonses.com` | DKIM |
-| CNAME | `<token2>._domainkey` | `<token2>.dkim.amazonses.com` | DKIM |
-| CNAME | `<token3>._domainkey` | `<token3>.dkim.amazonses.com` | DKIM |
-| TXT | `_dmarc` | `v=DMARC1; p=quarantine; rua=mailto:esparza.gabriel@gmail.com; adkim=s; aspf=r` | DMARC (no mail is hosted on the domain, so a strict policy is safe) |
-| TXT | `@` | `v=spf1 -all` | Root SPF: nothing sends as the bare domain; SES uses the MAIL FROM subdomain below |
+### 1.2 Event trail (per stage, automated)
 
-Get the tokens with `aws sesv2 get-email-identity --email-identity gabriel-esparza.com --query DkimAttributes.Tokens`. SES shows **Verified** within minutes to an hour after the CNAMEs resolve.
-
-### 1.2 Custom MAIL FROM (automated)
-
-Per stage, the stack sets `MailFromAttributes.MailFromDomain` to `bounce.<stage-host>` and creates the required `MX` and `TXT (v=spf1 include:amazonses.com -all)` records in the Route 53 zone. This keeps SPF alignment without touching GoDaddy and gives bounces a place to land (SES event destination → CloudWatch Logs).
+`infra/app.yaml` gives each stage a configuration set (injected server-side into every send) whose EventBridge destination lands sends, deliveries, bounces, and complaints in `/aws-messaging-mcp/<stage>/ses-events`.
 
 ### 1.3 Sender addresses
 
@@ -49,9 +39,9 @@ No mailboxes exist on `gabriel-esparza.com`, so senders are purely outbound iden
 
 Every email sets `ReplyToAddresses` to `esparza.gabriel@gmail.com` by default (server-injected unless the caller overrides), so replies reach a real inbox.
 
-### 1.4 Leave the sandbox (prod only)
+### 1.4 Leave the sandbox
 
-Dev stays in the sandbox: it can only send to verified addresses, which is exactly the recipient allow-list behaviour we want. Prod needs production access. Console → SES → Account dashboard → *Request production access*, or:
+Sandbox status is per **account and region** — dev and prod share `us-west-2`, so production access lifts the sandbox for both at once. Dev's recipient restriction is therefore not the sandbox but the `RecipientAllowList` guardrail (enforced in code with 100 % coverage); the sandbox merely doubles it up until access is granted. Request production access via Console → SES → Account dashboard → *Request production access*, or:
 
 ```bash
 aws sesv2 put-account-details \
@@ -124,7 +114,7 @@ go run ./cmd/ops bootstrap-user --stage prod --email esparza.gabriel@gmail.com
 # → creates the user with a temporary password, forces reset on first hosted-UI login, and requires TOTP enrolment
 ```
 
-For `dev`, the script also creates the `e2e-ci` user with a permanent password (stored only as the GitHub environment secret) and the confidential `ci` app client with `USER_PASSWORD_AUTH`.
+E2E needs no user at all: the dev-only confidential `ci` app client authenticates with the `client_credentials` grant, and its id/secret live in SSM (`/messaging-mcp/dev/ci-client-{id,secret}`) — see [`docs/testing.md`](../testing.md).
 
 ## 5. Test recipients (dev)
 

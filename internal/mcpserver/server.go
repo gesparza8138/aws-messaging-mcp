@@ -43,6 +43,17 @@ type HelloOutput struct {
 // (DNS-rebinding) protection is disabled because CloudFront terminates the
 // public hostname; the origin secret and bearer auth are the real gate.
 func NewHandler(d Deps) http.Handler {
+	server := NewServer(d)
+	return mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, &mcp.StreamableHTTPOptions{
+		Stateless:                  true,
+		JSONResponse:               true,
+		DisableLocalhostProtection: true,
+	})
+}
+
+// NewServer builds the MCP server with every tool registered; cmd/gendocs
+// connects to it in-memory to render the tool reference pages.
+func NewServer(d Deps) *mcp.Server {
 	server := mcp.NewServer(&mcp.Implementation{Name: "aws-messaging-mcp", Version: Version}, nil)
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "hello",
@@ -62,11 +73,7 @@ func NewHandler(d Deps) http.Handler {
 			Description: "SES account status: sandbox/production, quotas; requires msg/read.",
 		}, d.getAccount())
 	}
-	return mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, &mcp.StreamableHTTPOptions{
-		Stateless:                  true,
-		JSONResponse:               true,
-		DisableLocalhostProtection: true,
-	})
+	return server
 }
 
 func (d Deps) hello() mcp.ToolHandlerFor[HelloInput, HelloOutput] {

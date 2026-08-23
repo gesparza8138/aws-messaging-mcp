@@ -23,6 +23,13 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+      - name: tool-docs drift
+        # docs/tools/*.md are rendered from the live tool registry; a page
+        # that differs from what gendocs would emit fails the build.
+        run: go run ./cmd/gendocs -check
       - name: markdownlint
         run: npx --yes markdownlint-cli2@0.18.1 "**/*.md"
       - name: lychee (relative links, offline)

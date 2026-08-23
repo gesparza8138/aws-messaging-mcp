@@ -120,9 +120,12 @@ Then deploy through GitHub Actions only:
    job summary **without executing**.
 2. Review, then `gh workflow run deploy-dev.yml -f execute=true` to apply.
 
-Stage parameters live in `infra/params/{dev,prod}.json`; secret-bearing
-values (`OriginSecret`, `BreakGlassSha256`) are fetched from SSM by the
-workflow and passed as NoEcho parameters, never committed. After the stack is
+Stage parameters live in `infra/params/{dev,prod}.json` — the email knobs
+(`SesSenderAddresses`, `SesReplyTo`, `RecipientAllowList`, `MaxRecipients`,
+`RateLimitPerHour`, `RateLimitPerDay`) included; secret-bearing values
+(`OriginSecret`, `BreakGlassSha256`) are fetched from SSM by the workflow and
+passed as NoEcho parameters, never committed. Executed dev deploys finish with
+the e2e job ([`docs/testing.md`](../testing.md)). After the stack is
 up, create the owner user:
 
 ```bash
