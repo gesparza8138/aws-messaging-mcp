@@ -76,6 +76,7 @@ jobs:
           BG=$(aws ssm get-parameter --name /messaging-mcp/prod/break-glass-sha256 --query Parameter.Value --output text)
           echo "::add-mask::$BG"
           echo "break_glass_sha256=$BG" >> "$GITHUB_OUTPUT"
+          echo "allowed_cidrs=$(aws ssm get-parameter --name /messaging-mcp/edge/allowed-cidrs --query Parameter.Value --output text)" >> "$GITHUB_OUTPUT"
       - name: deploy
         run: |
           PARAMS=$(jq -r 'join(" ")' infra/params/prod.json)
@@ -90,6 +91,7 @@ jobs:
               "CodeKey=${{ needs.release.outputs.key }}" \
               "OriginSecret=${{ steps.secrets.outputs.origin_secret }}" \
               "BreakGlassSha256=${{ steps.secrets.outputs.break_glass_sha256 }}"
+              "AllowedCidrs=${{ steps.secrets.outputs.allowed_cidrs }}"
           aws cloudformation describe-stacks --stack-name aws-messaging-mcp-prod \
             --query 'Stacks[0].Outputs' --output table >> "$GITHUB_STEP_SUMMARY"
       - name: smoke test (unauthenticated contracts only)
