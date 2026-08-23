@@ -1,0 +1,132 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  aws-messaging-mcp edge stack (us-east-1): Route 53 hosted zone for the
+  delegated subdomain, ACM certificate for CloudFront, and the WAF WebACL
+  with the default-deny IP allow-list and the /files/* exemption. Deployed
+  once; shared by the dev and prod app stacks.
+
+Parameters:
+  DomainName:
+    Type: String
+    Default: mcp.gabriel-esparza.com
+    Description: Delegated subdomain; the hosted zone apex.
+  AnthropicEgressCidr:
+    Type: String
+    Default: 160.79.104.0/21
+    Description: >-
+      Anthropic's published egress range (hosted Claude surfaces). Re-verify
+      against https://docs.claude.com when changing.
+  HomeIpCidr:
+    Type: String
+    AllowedPattern: ^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}/\d{1,2}$
+    Description: >-
+      Owner IP allowed to reach /mcp/ (e.g. for Claude Code). Pass at deploy
+      time only - never commit a value (public repository). Update later in
+      the console or with scripts/update-my-ip.sh; drift is reported, not
+      reverted (PRD S4).
+
+Resources:
+  HostedZone:
+    Type: AWS::Route53::HostedZone
+    Properties:
+      Name: !Ref DomainName
+      HostedZoneConfig:
+        Comment: Delegated from GoDaddy for aws-messaging-mcp; see docs/setup/dns.md.
+
+  Certificate:
+    Type: AWS::CertificateManager::Certificate
+    Metadata:
+      checkov:
+        skip:
+          - id: CKV2_AWS_71
+            comment: Deliberate PRD 9.1 design - one certificate covers the prod apex and the dev subdomain via the wildcard SAN.
+    Properties:
+      DomainName: !Ref DomainName
+      SubjectAlternativeNames:
+        - !Sub "*.${DomainName}"
+      ValidationMethod: DNS
+      DomainValidationOptions:
+        - DomainName: !Ref DomainName
+          HostedZoneId: !Ref HostedZone
+        - DomainName: !Sub "*.${DomainName}"
+          HostedZoneId: !Ref HostedZone
+      KeyAlgorithm: RSA_2048
+
+  AllowedIpSet:
+    Type: AWS::WAFv2::IPSet
+    Properties:
+      Name: aws-messaging-mcp-allowed-ips
+      Description: >-
+        Default-deny allow-list for the MCP path: Anthropic egress plus owner
+        IPs. Owner-editable in the console, drift is reported not reverted.
+      Scope: CLOUDFRONT
+      IPAddressVersion: IPV4
+      Addresses:
+        - !Ref AnthropicEgressCidr
+        - !Ref HomeIpCidr
+
+  WebAcl:
+    Type: AWS::WAFv2::WebACL
+    Metadata:
+      checkov:
+        skip:
+          - id: CKV2_AWS_31
+            comment: WAF logging needs a Firehose/log destination; deferred to M5 hardening with the rest of observability.
+          - id: CKV_AWS_192
+            comment: Managed rule groups (incl. Known Bad Inputs) evaluated in M5; the origin is a JSON MCP API behind OAuth, and this ACL's job is the IP allow-list.
+    Properties:
+      Name: aws-messaging-mcp-edge
+      Description: Default-deny. Allows the files path for signed URLs and the allow-listed IPs.
+      Scope: CLOUDFRONT
+      DefaultAction:
+        Block: {}
+      VisibilityConfig:
+        CloudWatchMetricsEnabled: true
+        MetricName: aws-messaging-mcp-edge
+        SampledRequestsEnabled: true
+      Rules:
+        - Name: allow-files-path
+          Priority: 0
+          Action:
+            Allow: {}
+          Statement:
+            ByteMatchStatement:
+              FieldToMatch:
+                UriPath: {}
+              PositionalConstraint: STARTS_WITH
+              SearchString: /files/
+              TextTransformations:
+                - Priority: 0
+                  Type: NONE
+          VisibilityConfig:
+            CloudWatchMetricsEnabled: true
+            MetricName: allow-files-path
+            SampledRequestsEnabled: true
+        - Name: allow-listed-ips
+          Priority: 1
+          Action:
+            Allow: {}
+          Statement:
+            IPSetReferenceStatement:
+              Arn: !GetAtt AllowedIpSet.Arn
+          VisibilityConfig:
+            CloudWatchMetricsEnabled: true
+            MetricName: allow-listed-ips
+            SampledRequestsEnabled: true
+
+Outputs:
+  HostedZoneId:
+    Description: Route 53 zone for the delegated subdomain; app stacks write records here.
+    Value: !Ref HostedZone
+  NameServers:
+    Description: Add these four NS records for host "mcp" at GoDaddy (docs/setup/dns.md section 2).
+    Value: !Join [", ", !GetAtt HostedZone.NameServers]
+  CertificateArn:
+    Description: ACM certificate (apex + wildcard) for the CloudFront distributions.
+    Value: !Ref Certificate
+  WebAclArn:
+    Description: WAF WebACL to attach to the CloudFront distributions.
+    Value: !GetAtt WebAcl.Arn
+  AllowedIpSetArn:
+    Description: IP set referenced by scripts/update-my-ip.sh and the e2e runner registration.
+    Value: !GetAtt AllowedIpSet.Arn
