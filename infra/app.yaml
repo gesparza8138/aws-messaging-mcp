@@ -309,6 +309,28 @@ Resources:
       # Restricts this grant to calls arriving via the function URL.
       InvokedViaFunctionUrl: true
 
+  # Lambda Function URLs rename WWW-Authenticate to
+  # x-amzn-Remapped-www-authenticate on every response; MCP clients need the
+  # real header for RFC 9728 discovery (PRD A4), so the edge restores it.
+  RestoreAuthHeaderFunction:
+    Type: AWS::CloudFront::Function
+    Properties:
+      Name: !Sub aws-messaging-mcp-${Stage}-restore-www-authenticate
+      AutoPublish: true
+      FunctionConfig:
+        Comment: Rename x-amzn-remapped-www-authenticate back to www-authenticate.
+        Runtime: cloudfront-js-2.0
+      FunctionCode: |
+        function handler(event) {
+          var response = event.response;
+          var remapped = response.headers['x-amzn-remapped-www-authenticate'];
+          if (remapped) {
+            response.headers['www-authenticate'] = { value: remapped.value };
+            delete response.headers['x-amzn-remapped-www-authenticate'];
+          }
+          return response;
+        }
+
   Distribution:
     Type: AWS::CloudFront::Distribution
     Metadata:
@@ -360,6 +382,9 @@ Resources:
           # Managed policies: CachingDisabled + AllViewerExceptHostHeader.
           CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad
           OriginRequestPolicyId: b689b0a8-53d0-40ab-baf2-68738e2966ac
+          FunctionAssociations:
+            - EventType: viewer-response
+              FunctionARN: !GetAtt RestoreAuthHeaderFunction.FunctionMetadata.FunctionARN
 
   DnsRecordA:
     Type: AWS::Route53::RecordSet
