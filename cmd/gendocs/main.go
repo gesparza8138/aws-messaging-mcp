@@ -55,13 +55,13 @@ func run(check bool, dir string) error {
 	if err != nil {
 		return err
 	}
-	defer serverSession.Close()
+	defer func() { _ = serverSession.Close() }()
 	client := mcp.NewClient(&mcp.Implementation{Name: "gendocs", Version: "0"}, nil)
 	session, err := client.Connect(ctx, clientTransport, nil)
 	if err != nil {
 		return err
 	}
-	defer session.Close()
+	defer func() { _ = session.Close() }()
 
 	tools, err := session.ListTools(ctx, nil)
 	if err != nil {
@@ -79,16 +79,16 @@ func run(check bool, dir string) error {
 	var stale []string
 	for path, want := range pages {
 		if check {
-			got, err := os.ReadFile(path)
+			got, err := os.ReadFile(path) // #nosec G304 -- paths are built from tool names, not user input
 			if err != nil || !bytes.Equal(got, want) {
 				stale = append(stale, path)
 			}
 			continue
 		}
-		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
 			return err
 		}
-		if err := os.WriteFile(path, want, 0o644); err != nil {
+		if err := os.WriteFile(path, want, 0o600); err != nil {
 			return err
 		}
 	}
