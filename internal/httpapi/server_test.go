@@ -1,0 +1,293 @@
+package httpapi_test
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+
+	"github.com/modelcontextprotocol/go-sdk/mcp"
+
+	"github.com/gesparza8138/aws-messaging-mcp/internal/auth"
+	"github.com/gesparza8138/aws-messaging-mcp/internal/httpapi"
+	"github.com/gesparza8138/aws-messaging-mcp/internal/mcpserver"
+	"github.com/gesparza8138/aws-messaging-mcp/internal/settings"
+	"github.com/gesparza8138/aws-messaging-mcp/internal/testkeys"
+)
+
+const (
+	issuer         = "https://cognito-idp.us-west-2.amazonaws.com/us-west-2_ITPOOL"
+	clientID       = "integration-client"
+	originSecret   = "integration-origin-secret"
+	breakGlassTok  = "integration-break-glass-token"
+	cognitoDomain  = "https://auth.test.example.com"
+	metadataDirect = "direct"
+)
+
+type fixture struct {
+	srv  *httptest.Server
+	keys *testkeys.Keys
+	cfg  settings.Settings
+}
+
+func newFixture(t *testing.T, mode string) *fixture {
+	t.Helper()
+	keys, err := testkeys.New(issuer, clientID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256([]byte(breakGlassTok))
+	// The base URL is only known after the server starts; it is set below.
+	cfg := settings.Settings{
+		Stage:               "test",
+		CognitoIssuer:       issuer,
+		CognitoDomain:       cognitoDomain,
+		AllowedClientIDs:    []string{clientID},
+		AuthMetadataMode:    mode,
+		RequireOriginSecret: true,
+		OriginSecret:        originSecret,
+		BreakGlassEnabled:   true,
+		BreakGlassSHA256:    hex.EncodeToString(sum[:]),
+		BreakGlassScopes:    []string{"msg/read"},
+	}
+	var handler http.Handler
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { handler.ServeHTTP(w, r) }))
+	srv.Start()
+	cfg.MCPResourceURL = srv.URL + "/mcp/"
+	cfg.PublicBaseURL = srv.URL
+	handler = httpapi.NewHandler(httpapi.Config{
+		Settings: cfg,
+		Verifier: auth.NewVerifier(issuer, []string{clientID}, keys.Provider()),
+		MCP:      mcpserver.NewHandler("test"),
+	})
+	t.Cleanup(srv.Close)
+	return &fixture{srv: srv, keys: keys, cfg: cfg}
+}
+
+func (f *fixture) do(t *testing.T, method, path, token string, body string) *http.Response {
+	t.Helper()
+	req, err := http.NewRequest(method, f.srv.URL+path, strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("X-Origin-Secret", originSecret)
+	req.Header.Set("Content-Type", "application/json")
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { resp.Body.Close() })
+	return resp
+}
+
+func decode(t *testing.T, resp *http.Response) map[string]any {
+	t.Helper()
+	var doc map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&doc); err != nil {
+		t.Fatal(err)
+	}
+	return doc
+}
+
+func TestOriginSecretEnforced(t *testing.T) {
+	f := newFixture(t, metadataDirect)
+	for _, h := range []string{"", "wrong"} {
+		req, _ := http.NewRequest(http.MethodGet, f.srv.URL+"/healthz", nil)
+		if h != "" {
+			req.Header.Set("X-Origin-Secret", h)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusForbidden {
+			t.Fatalf("header %q: status %d", h, resp.StatusCode)
+		}
+	}
+	resp := f.do(t, http.MethodGet, "/healthz", "", "")
+	if resp.StatusCode != http.StatusOK || decode(t, resp)["stage"] != "test" {
+		t.Fatalf("healthz: %d", resp.StatusCode)
+	}
+}
+
+func TestUnauthenticated401Contract(t *testing.T) {
+	f := newFixture(t, metadataDirect)
+	for _, path := range []string{"/mcp/", "/mcp"} {
+		resp := f.do(t, http.MethodPost, path, "", "{}")
+		if resp.StatusCode != http.StatusUnauthorized {
+			t.Fatalf("%s: status %d", path, resp.StatusCode)
+		}
+		want := `Bearer resource_metadata="` + f.srv.URL + `/.well-known/oauth-protected-resource"`
+		if got := resp.Header.Get("WWW-Authenticate"); got != want {
+			t.Fatalf("%s: WWW-Authenticate %q", path, got)
+		}
+	}
+	resp := f.do(t, http.MethodPost, "/mcp/", "nonsense", "{}")
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("garbage token: %d", resp.StatusCode)
+	}
+	// Bearer prefix is case-insensitive; an empty token is rejected.
+	req, _ := http.NewRequest(http.MethodPost, f.srv.URL+"/mcp/", strings.NewReader("{}"))
+	req.Header.Set("X-Origin-Secret", originSecret)
+	req.Header.Set("Authorization", "BEARER   ")
+	resp2, _ := http.DefaultClient.Do(req)
+	resp2.Body.Close()
+	if resp2.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("empty bearer: %d", resp2.StatusCode)
+	}
+}
+
+func TestNoRedirectsEver(t *testing.T) {
+	f := newFixture(t, metadataDirect)
+	tok, _ := f.keys.Mint(nil)
+	for _, path := range []string{"/mcp", "/mcp/"} {
+		resp := f.do(t, http.MethodPost, path, tok, "{}")
+		if resp.StatusCode >= 300 && resp.StatusCode < 400 || resp.StatusCode == http.StatusNotFound {
+			t.Fatalf("%s with token: unexpected %d", path, resp.StatusCode)
+		}
+	}
+	resp := f.do(t, http.MethodGet, "/.well-known/oauth-protected-resource/", "", "")
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("trailing slash on an exact route must 404, got %d", resp.StatusCode)
+	}
+}
+
+func TestMetadataDocuments(t *testing.T) {
+	f := newFixture(t, metadataDirect)
+	for _, path := range []string{"/.well-known/oauth-protected-resource", "/.well-known/oauth-protected-resource/mcp"} {
+		doc := decode(t, f.do(t, http.MethodGet, path, "", ""))
+		if doc["resource"] != f.cfg.MCPResourceURL {
+			t.Fatalf("%s resource: %v", path, doc["resource"])
+		}
+		if as := doc["authorization_servers"].([]any); as[0] != issuer {
+			t.Fatalf("%s authorization_servers: %v", path, as)
+		}
+		if scopes := doc["scopes_supported"].([]any); len(scopes) != len(settings.ScopesSupported) {
+			t.Fatalf("%s scopes: %v", path, scopes)
+		}
+	}
+	as := decode(t, f.do(t, http.MethodGet, "/.well-known/oauth-authorization-server", "", ""))
+	if as["issuer"] != issuer || as["authorization_endpoint"] != cognitoDomain+"/oauth2/authorize" ||
+		as["token_endpoint"] != cognitoDomain+"/oauth2/token" || as["jwks_uri"] != f.cfg.JWKSURL() {
+		t.Fatalf("authorization-server doc: %v", as)
+	}
+	if pkce := as["code_challenge_methods_supported"].([]any); len(pkce) != 1 || pkce[0] != "S256" {
+		t.Fatalf("pkce: %v", pkce)
+	}
+	fronted := newFixture(t, "fronted")
+	doc := decode(t, fronted.do(t, http.MethodGet, "/.well-known/oauth-protected-resource", "", ""))
+	if as := doc["authorization_servers"].([]any); as[0] != fronted.srv.URL+"/oauth" {
+		t.Fatalf("fronted authorization_servers: %v", as)
+	}
+	suffixed := decode(t, fronted.do(t, http.MethodGet, "/.well-known/oauth-authorization-server/oauth", "", ""))
+	if suffixed["issuer"] != issuer {
+		t.Fatalf("suffixed AS doc: %v", suffixed)
+	}
+}
+
+func callHello(t *testing.T, f *fixture, token, path, name string) *mcp.CallToolResult {
+	t.Helper()
+	ctx := context.Background()
+	client := mcp.NewClient(&mcp.Implementation{Name: "test-client", Version: "0"}, nil)
+	transport := &mcp.StreamableClientTransport{
+		Endpoint:   f.srv.URL + path,
+		HTTPClient: &http.Client{Transport: headerTransport{token: token}},
+	}
+	session, err := client.Connect(ctx, transport, nil)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	t.Cleanup(func() { session.Close() })
+	tools, err := session.ListTools(ctx, nil)
+	if err != nil {
+		t.Fatalf("list tools: %v", err)
+	}
+	if len(tools.Tools) != 1 || tools.Tools[0].Name != "hello" {
+		t.Fatalf("tools: %+v", tools.Tools)
+	}
+	args := map[string]any{}
+	if name != "" {
+		args["name"] = name
+	}
+	result, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "hello", Arguments: args})
+	if err != nil {
+		t.Fatalf("call tool: %v", err)
+	}
+	return result
+}
+
+type headerTransport struct{ token string }
+
+func (h headerTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	r.Header.Set("X-Origin-Secret", originSecret)
+	r.Header.Set("Authorization", "Bearer "+h.token)
+	return http.DefaultTransport.RoundTrip(r)
+}
+
+func structured(t *testing.T, r *mcp.CallToolResult) map[string]any {
+	t.Helper()
+	raw, err := json.Marshal(r.StructuredContent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out map[string]any
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+func TestOAuthRoundTripBothPaths(t *testing.T) {
+	f := newFixture(t, metadataDirect)
+	tok, _ := f.keys.Mint(nil)
+	for _, path := range []string{"/mcp/", "/mcp"} {
+		result := callHello(t, f, tok, path, "Gabe")
+		if result.IsError {
+			t.Fatalf("%s: tool error: %+v", path, result.Content)
+		}
+		out := structured(t, result)
+		if out["message"] != "Hello, Gabe!" || out["stage"] != "test" || out["caller"] != "integration-user" || out["auth_method"] != "oauth" {
+			t.Fatalf("%s: %v", path, out)
+		}
+	}
+}
+
+func TestBreakGlassRoundTrip(t *testing.T) {
+	f := newFixture(t, metadataDirect)
+	result := callHello(t, f, breakGlassTok, "/mcp/", "")
+	out := structured(t, result)
+	if result.IsError || out["auth_method"] != "break_glass" || out["caller"] != "break-glass" || out["message"] != "Hello, world!" {
+		t.Fatalf("%v %v", result.IsError, out)
+	}
+}
+
+func TestMissingScopeIsToolErrorNot401(t *testing.T) {
+	f := newFixture(t, metadataDirect)
+	tok, _ := f.keys.Mint(testkeys.Claims{"scope": "msg/email:send"})
+	result := callHello(t, f, tok, "/mcp/", "")
+	if !result.IsError {
+		t.Fatal("expected isError result")
+	}
+	text := result.Content[0].(*mcp.TextContent).Text
+	if !strings.Contains(text, "msg/read") {
+		t.Fatalf("error text: %q", text)
+	}
+}
+
+func TestPrincipalFromEmptyContext(t *testing.T) {
+	if _, ok := httpapi.PrincipalFrom(context.Background()); ok {
+		t.Fatal("no principal expected")
+	}
+}
+
+var _ = io.EOF
