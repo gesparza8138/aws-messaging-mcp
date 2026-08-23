@@ -2,5 +2,9 @@
   "Stage=prod",
   "CognitoDomainPrefix=messaging-mcp-prod",
   "AuthMetadataMode=direct",
-  "BreakGlassEnabled=false"
+  "BreakGlassEnabled=false",
+  "SesSenderAddresses=mcp@gabriel-esparza.com",
+  "RecipientAllowList=",
+  "RateLimitPerHour=60",
+  "RateLimitPerDay=300"
 ]

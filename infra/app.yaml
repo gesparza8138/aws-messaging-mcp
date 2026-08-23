@@ -55,6 +55,26 @@ Parameters:
     Type: String
     Default: esparza.gabriel@gmail.com
     Description: SNS subscription for operational alarms.
+  SesSenderAddresses:
+    Type: String
+    Description: Comma-separated sender allow-list for this stage (PRD 8).
+  SesReplyTo:
+    Type: String
+    Default: esparza.gabriel@gmail.com
+    Description: Default Reply-To injected when the caller omits one.
+  RecipientAllowList:
+    Type: String
+    Default: ""
+    Description: Comma-separated recipient allow-list; empty disables (prod).
+  RateLimitPerHour:
+    Type: Number
+    Default: 20
+  RateLimitPerDay:
+    Type: Number
+    Default: 300
+  MaxRecipients:
+    Type: Number
+    Default: 10
   AllowedCidrs:
     Type: String
     Description: >-
@@ -73,6 +93,7 @@ Parameters:
 
 Conditions:
   IsProd: !Equals [!Ref Stage, prod]
+  IsDev: !Not [!Equals [!Ref Stage, prod]]
   HasReservedConcurrency: !Not [!Equals [!Ref ReservedConcurrency, 0]]
 
 Resources:
@@ -179,6 +200,100 @@ Resources:
       EnableTokenRevocation: true
       PreventUserExistenceErrors: ENABLED
 
+  # Confidential app client for CI e2e (PRD 11.3); dev only.
+  CiClient:
+    Type: AWS::Cognito::UserPoolClient
+    Condition: IsDev
+    DependsOn: ResourceServer
+    Properties:
+      ClientName: ci
+      UserPoolId: !Ref UserPool
+      GenerateSecret: true
+      SupportedIdentityProviders: [COGNITO]
+      ExplicitAuthFlows: [ALLOW_USER_PASSWORD_AUTH, ALLOW_REFRESH_TOKEN_AUTH]
+      AllowedOAuthFlows: [code]
+      AllowedOAuthFlowsUserPoolClient: true
+      AllowedOAuthScopes: [openid, msg/read, msg/email:send]
+      CallbackURLs: [http://localhost/unused]
+      AccessTokenValidity: 15
+      IdTokenValidity: 15
+      RefreshTokenValidity: 1
+      TokenValidityUnits:
+        AccessToken: minutes
+        IdToken: minutes
+        RefreshToken: days
+      EnableTokenRevocation: true
+      PreventUserExistenceErrors: ENABLED
+
+  RateLimitTable:
+    Type: AWS::DynamoDB::Table
+    Metadata:
+      checkov:
+        skip:
+          - id: CKV_AWS_28
+            comment: Point-in-time recovery is pointless for ephemeral rate-limit counters that expire via TTL.
+          - id: CKV_AWS_119
+            comment: Default encryption suffices for counters holding only tool names and integers.
+    Properties:
+      TableName: !Sub aws-messaging-mcp-${Stage}-counters
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - { AttributeName: pk, AttributeType: S }
+      KeySchema:
+        - { AttributeName: pk, KeyType: HASH }
+      TimeToLiveSpecification:
+        AttributeName: expires_at
+        Enabled: true
+
+  SesConfigurationSet:
+    Type: AWS::SES::ConfigurationSet
+    Properties:
+      Name: !Sub aws-messaging-mcp-${Stage}
+
+  SesEventDestination:
+    Type: AWS::SES::ConfigurationSetEventDestination
+    Properties:
+      ConfigurationSetName: !Ref SesConfigurationSet
+      EventDestination:
+        Enabled: true
+        MatchingEventTypes: [SEND, DELIVERY, BOUNCE, COMPLAINT, REJECT]
+        EventBridgeDestination:
+          EventBusArn: !Sub arn:${AWS::Partition}:events:${AWS::Region}:${AWS::AccountId}:event-bus/default
+
+  SesEventsLogGroup:
+    Type: AWS::Logs::LogGroup
+    Metadata:
+      checkov:
+        skip:
+          - id: CKV_AWS_158
+            comment: Default SSE suffices; events carry message ids and hashed metadata, not bodies (PRD S5).
+    Properties:
+      LogGroupName: !Sub /aws-messaging-mcp/${Stage}/ses-events
+      RetentionInDays: !If [IsProd, 90, 14]
+
+  SesEventsLogPolicy:
+    Type: AWS::Logs::ResourcePolicy
+    Properties:
+      PolicyName: !Sub aws-messaging-mcp-${Stage}-ses-events
+      PolicyDocument: !Sub |
+        {"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":["events.amazonaws.com","delivery.logs.amazonaws.com"]},"Action":["logs:CreateLogStream","logs:PutLogEvents"],"Resource":"${SesEventsLogGroup.Arn}"}]}
+
+  SesEventsRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub aws-messaging-mcp-${Stage}-ses-events
+      Description: SES sending events for this stage's configuration set to CloudWatch Logs.
+      EventPattern:
+        source: [aws.ses]
+        detail:
+          mail:
+            tags:
+              ses:configuration-set:
+                - !Ref SesConfigurationSet
+      Targets:
+        - Id: log-group
+          Arn: !GetAtt SesEventsLogGroup.Arn
+
   LogGroup:
     Type: AWS::Logs::LogGroup
     Metadata:
@@ -215,6 +330,28 @@ Resources:
                 Effect: Allow
                 Action: ssm:GetParameter
                 Resource: !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/messaging-mcp/${Stage}/*
+              - Sid: SendEmail
+                Effect: Allow
+                Action:
+                  - ses:SendEmail
+                  - ses:SendRawEmail
+                Resource:
+                  - "{{resolve:ssm:/messaging-mcp/ses/identity-arn}}"
+                  - !Sub arn:${AWS::Partition}:ses:${AWS::Region}:${AWS::AccountId}:configuration-set/${SesConfigurationSet}
+                Condition:
+                  StringEquals:
+                    ses:FromAddress: !Split [",", !Ref SesSenderAddresses]
+              - Sid: SesRead
+                Effect: Allow
+                Action:
+                  - ses:ListEmailIdentities
+                  - ses:GetAccount
+                Resource: "*"
+              - Sid: RateLimitCounters
+                Effect: Allow
+                Action:
+                  - dynamodb:UpdateItem
+                Resource: !GetAtt RateLimitTable.Arn
               - Sid: Tracing
                 Effect: Allow
                 Action:
@@ -271,6 +408,15 @@ Resources:
           BREAK_GLASS_ENABLED: !Ref BreakGlassEnabled
           BREAK_GLASS_SHA256: !Ref BreakGlassSha256
           BREAK_GLASS_SCOPES: msg/read
+          SES_CONFIGURATION_SET: !Ref SesConfigurationSet
+          SES_REPLY_TO: !Ref SesReplyTo
+          SES_SENDER_ADDRESSES: !Ref SesSenderAddresses
+          RECIPIENT_ALLOW_LIST: !Ref RecipientAllowList
+          MAX_RECIPIENTS: !Ref MaxRecipients
+          RATE_LIMIT_PER_HOUR: !Ref RateLimitPerHour
+          RATE_LIMIT_PER_DAY: !Ref RateLimitPerDay
+          EMAIL_MAX_RAW_BYTES: "10485760"
+          RATE_LIMIT_TABLE: !Ref RateLimitTable
 
   McpFunctionUrl:
     Type: AWS::Lambda::Url
@@ -475,6 +621,10 @@ Outputs:
     Value: !Ref ClaudeCodeClient
   DistributionId:
     Value: !Ref Distribution
+  CiClientId:
+    Condition: IsDev
+    Description: Confidential CI client id for e2e (dev only).
+    Value: !Ref CiClient
   FunctionUrl:
     Description: Raw Function URL (origin-secret protected); used by the release smoke test.
     Value: !GetAtt McpFunctionUrl.FunctionUrl
