@@ -28,14 +28,24 @@ export E2E_SENDER=mcp-dev@gabriel-esparza.com
 export E2E_RECIPIENT=esparza.gabriel@gmail.com
 export E2E_CONFIG_SET=aws-messaging-mcp-dev
 export E2E_EVENTS_LOG_GROUP=/aws-messaging-mcp/dev/ses-events
+# SMS/MMS (M3): skipped while unset
+export E2E_ORIGINATION=$(aws ssm get-parameter --name /messaging-mcp/eum/phone-number --query Parameter.Value --output text)
+export E2E_SMS_CONFIG_SET=aws-messaging-mcp-dev-sms
+export E2E_EUM_LOG_GROUP=/aws-messaging-mcp/dev/eum-events
+export E2E_TEST_PHONE=+1XXXXXXXXXX   # your mobile; also a GitHub dev secret
 make e2e
 ```
 
 > [!NOTE]
-> The suite sends one real email per run to `E2E_RECIPIENT` and consumes a few
-> rate-limit slots (guardrails run for dry-run and blocked attempts too). The
-> delivery-event check skips — never fails — when the log group is unreadable
-> or the mailbox provider is slow; the send itself is the assertion.
+> The suite sends one real email per run to `E2E_RECIPIENT` — and, when
+> `E2E_TEST_PHONE` is set, one SMS and one MMS — consuming a few rate-limit
+> slots (guardrails run for dry-run and blocked attempts too). Delivery/event
+> checks skip — never fail — on unreadable log groups or provider delay; the
+> send is the assertion. While the EUM account is in the **SMS sandbox**,
+> real sends reach only verified destination numbers; the suite turns the
+> sandbox refusal into a skip, so verify your phone
+> (`aws pinpoint-sms-voice-v2 create-verified-destination-number …`) or wait
+> for production access to exercise the full path.
 
 ## Why `client_credentials`
 

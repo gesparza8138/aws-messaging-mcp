@@ -86,6 +86,13 @@ jobs:
               {ParameterKey: "OriginationPhoneArn", ParameterValue: $phonearn},
               {ParameterKey: "ProtectConfigurationId", ParameterValue: $protectid}
             ]' > params.json
+          # Dev only: the owner's test phone joins the recipient allow-list at
+          # deploy time so it never appears in the repo (public-repo hygiene).
+          if [ -n "${{ secrets.E2E_TEST_PHONE }}" ]; then
+            jq --arg phone "${{ secrets.E2E_TEST_PHONE }}" \
+              'map(if .ParameterKey == "RecipientAllowList" then .ParameterValue += "," + $phone else . end)' \
+              params.json > params.tmp && mv params.tmp params.json
+          fi
           aws cloudformation deploy \
             --stack-name aws-messaging-mcp-dev \
             --template-file infra/app.yaml \
@@ -164,6 +171,11 @@ jobs:
           export E2E_BASE_URL E2E_TOKEN_URL E2E_CLIENT_ID E2E_CLIENT_SECRET E2E_SENDER E2E_RECIPIENT
           export E2E_CONFIG_SET=aws-messaging-mcp-dev
           export E2E_EVENTS_LOG_GROUP=/aws-messaging-mcp/dev/ses-events
+          export E2E_TEST_PHONE="${{ secrets.E2E_TEST_PHONE }}"
+          export E2E_ORIGINATION=$(aws ssm get-parameter --name /messaging-mcp/eum/phone-number \
+            --query Parameter.Value --output text 2>/dev/null || true)
+          export E2E_SMS_CONFIG_SET=aws-messaging-mcp-dev-sms
+          export E2E_EUM_LOG_GROUP=/aws-messaging-mcp/dev/eum-events
           # The republished edge function propagates in seconds, but poll
           # rather than assume: healthz goes through the allow-list too.
           for _ in $(seq 1 24); do
