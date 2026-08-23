@@ -70,3 +70,16 @@ def test_authorization_server_metadata_adds_pkce_field(server: Server) -> None:
     assert document["token_endpoint"] == f"{settings.cognito_domain}/oauth2/token"
     assert document["jwks_uri"] == settings.jwks_url
     assert document["code_challenge_methods_supported"] == ["S256"]
+
+
+def test_mcp_without_trailing_slash_is_not_redirected(server: Server) -> None:
+    """Anthropic's hosted bridge posts to /mcp and never follows redirects."""
+    base_url, _ = server
+    response = httpx.post(
+        f"{base_url}/mcp",
+        headers={"X-Origin-Secret": ORIGIN_SECRET},
+        json={},
+        follow_redirects=False,
+    )
+    assert response.status_code == 401
+    assert "WWW-Authenticate" in response.headers
