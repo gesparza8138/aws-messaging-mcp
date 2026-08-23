@@ -61,18 +61,22 @@ Approval is usually 24–48 hours; AWS sometimes asks follow-up questions by ema
 
 ## 2. AWS End User Messaging — toll-free number (SMS + MMS)
 
-### 2.1 Request the number
+### 2.1 Request the number (CloudFormation)
 
-Console → AWS End User Messaging SMS → Phone numbers → *Request originator* → Country **United States**, capabilities **SMS + MMS**, number type **Toll-free**, two-way **off**. Or:
+The toll-free number and the protect configuration are stack-managed —
+`infra/eum.yaml`, deployed once from the workstation like `ses-domain`
+(M3-1; `AWS::SMSVOICE::*` became CFN-native). The stack writes the number,
+its ARN/id, and the protect-configuration id to SSM under
+`/messaging-mcp/eum/*`, so nothing number-shaped lives in the repo.
 
 ```bash
-aws pinpoint-sms-voice-v2 request-phone-number \
-  --iso-country-code US --message-type TRANSACTIONAL \
-  --number-capabilities SMS MMS --number-type TOLL_FREE \
-  --deletion-protection-enabled
+aws cloudformation deploy --stack-name aws-messaging-mcp-eum \
+  --template-file infra/eum.yaml --no-execute-changeset
+# review, then execute the change set — allocation starts the ~$2/month lease
 ```
 
-Cost ≈ $2/month. Note the `PhoneNumberArn` and `PhoneNumberId`.
+The number is deletion-protected and `Retain`ed: carrier verification is not
+reproducible on a re-created number.
 
 ### 2.2 Toll-free verification form
 

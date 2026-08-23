@@ -74,6 +74,8 @@ jobs:
           echo "::add-mask::$BG"
           echo "break_glass_sha256=$BG" >> "$GITHUB_OUTPUT"
           echo "allowed_cidrs=$(aws ssm get-parameter --name /messaging-mcp/edge/allowed-cidrs --query Parameter.Value --output text)" >> "$GITHUB_OUTPUT"
+          # Empty until the shared eum stack exists; the /opt-in page copes.
+          echo "opt_in_number=$(aws ssm get-parameter --name /messaging-mcp/eum/phone-number --query Parameter.Value --output text 2>/dev/null || true)" >> "$GITHUB_OUTPUT"
       - name: deploy
         run: |
           # A JSON parameter file sidesteps the CLI's Key=Value parser, which
@@ -83,11 +85,13 @@ jobs:
             --arg os "${{ steps.secrets.outputs.origin_secret }}" \
             --arg bg "${{ steps.secrets.outputs.break_glass_sha256 }}" \
             --arg cidrs "${{ steps.secrets.outputs.allowed_cidrs }}" \
+            --arg optin "${{ steps.secrets.outputs.opt_in_number }}" \
             '$base[0] + [
               {ParameterKey: "CodeKey", ParameterValue: $key},
               {ParameterKey: "OriginSecret", ParameterValue: $os},
               {ParameterKey: "BreakGlassSha256", ParameterValue: $bg},
-              {ParameterKey: "AllowedCidrs", ParameterValue: $cidrs}
+              {ParameterKey: "AllowedCidrs", ParameterValue: $cidrs},
+              {ParameterKey: "OptInPhoneNumber", ParameterValue: $optin}
             ]' > params.json
           aws cloudformation deploy \
             --stack-name aws-messaging-mcp-prod \
