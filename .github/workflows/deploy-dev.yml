@@ -72,6 +72,7 @@ jobs:
             --stack-name aws-messaging-mcp-dev \
             --template-file infra/app.yaml \
             --role-arn "arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/aws-messaging-mcp-cfn-service" \
+            --capabilities CAPABILITY_NAMED_IAM \
             --no-execute-changeset \
             --parameter-overrides $PARAMS \
               "CodeKey=${{ steps.build.outputs.key }}" \
