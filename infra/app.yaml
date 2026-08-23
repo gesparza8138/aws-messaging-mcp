@@ -240,7 +240,7 @@ Resources:
       # would block a CI user anyway). openid is not allowed on this grant.
       AllowedOAuthFlows: [client_credentials]
       AllowedOAuthFlowsUserPoolClient: true
-      AllowedOAuthScopes: [msg/read, msg/email:send]
+      AllowedOAuthScopes: [msg/read, msg/email:send, msg/sms:send]
       AccessTokenValidity: 15
       TokenValidityUnits:
         AccessToken: minutes
