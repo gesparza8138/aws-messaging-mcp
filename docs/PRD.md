@@ -510,7 +510,7 @@ flowchart LR
 | `iac-scans` | `cfn-lint`, `checkov -d infra/`, `cfn_nag_scan` | no high/critical |
 | `build-artifact` | `CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath` → zip `bootstrap` → upload to artifact bucket keyed by content hash | reproducible hash |
 | `deploy-dev` | `aws cloudformation deploy --template-file infra/app.yaml --parameter-overrides Stage=dev CodeKey=...` with change-set review logged | stack `UPDATE_COMPLETE` |
-| `e2e-tests` | `pytest tests/e2e -m e2e` against dev URL; obtains a token via Cognito `USER_PASSWORD_AUTH` on a dedicated CI test user with restricted scopes | must pass |
+| `e2e-tests` | `go test -tags e2e ./e2e/` against the dev URL; token via the Cognito `client_credentials` grant on the dev-only confidential `ci` client (scopes `msg/read` + `msg/email:send`) | must pass |
 | `release` | `git-cliff` changelog, GitHub Release with artifact + SBOM | on `v*` tag |
 | `deploy-prod` | same as dev, `Stage=prod`, GitHub Environment `prod` with required reviewer (owner) and wait timer | approval + success |
 | `smoke-test` | `DryRun: true` calls for each tool via the hosted-client path | must pass; auto-rollback via `--disable-rollback false` on failure |
@@ -527,7 +527,7 @@ Configured once via `scripts/setup-github.sh`; full walkthrough in [`docs/setup/
 - Conventional Commits enforced by `commitlint` in `pre-commit` and CI.
 - Dependabot weekly for pip and GitHub Actions; Actions pinned to commit SHAs.
 - `CODEOWNERS` = owner for `infra/` and `src/auth/`.
-- Secrets in GitHub: none for AWS (OIDC). Only `E2E_TEST_USER_PASSWORD` (Cognito CI user) stored as an Environment secret on `dev`.
+- Secrets in GitHub: none. AWS access is OIDC; the e2e client credentials live in SSM (`/messaging-mcp/dev/ci-client-{id,secret}`), read by the dev deploy role at run time.
 
 ### 10.3 Rollback
 
@@ -554,14 +554,14 @@ flowchart TB
 
 - Spin up the FastAPI app in-process with a test JWKS (generated RSA key); exercise the MCP protocol via the official `mcp` Python client over Streamable HTTP: `initialize`, `tools/list`, `tools/call`.
 - Verify the `401` + `WWW-Authenticate` shape and the `/.well-known/oauth-protected-resource` document byte-for-byte against the spec.
-- boto3 mocked with `moto` (SES v2 supported; EUM v2 partially — stub with `botocore.stub.Stubber` where moto lacks coverage).
+- AWS clients are interfaces (`internal/awsclients`) with hand-rolled fakes in tests; no live AWS calls below the e2e tier.
 
 ### 11.3 End-to-end tests (`tests/e2e`)
 
-- Run in CI after `deploy-dev`, and locally via `make e2e`.
-- Authenticate as a dedicated Cognito **CI user** (scopes limited to `msg/read` + `msg/email:send` + `msg/sms:send`; no RCS by default) using `USER_PASSWORD_AUTH` on a separate confidential app client that is only enabled in `dev`.
-- Real sends: one email to the owner's test mailbox, one SMS and one MMS to the owner's registered test device, one RCS message to a registered RCS test device (skipped if registration is not active). Recipient allow-list in `dev` makes it impossible for these tests to reach anyone else.
-- Assert on AWS `MessageId`, then poll the SES/EUM event log group for a delivery event (bounded wait, marks `xfail` rather than fail on carrier delay).
+- Run in CI as the `e2e-dev` job of every executed `deploy-dev` run, and locally via `make e2e` (see [`docs/testing.md`](testing.md)). The job admits the runner's IP to the edge allow-list for the duration of the run and withdraws it in an `always()` step (R7).
+- Authenticate machine-to-machine with the Cognito **`client_credentials`** grant on the dev-only confidential `ci` client (scopes `msg/read` + `msg/email:send`). A CI *user* cannot work: `InitiateAuth` access tokens carry only `aws.cognito.signin.user.admin` — never resource-server scopes — and the pool's required TOTP blocks non-interactive sign-in.
+- Real sends: one email to the owner's test mailbox; one SMS and one MMS to the owner's registered test device (M3). Recipient allow-list in `dev` makes it impossible for these tests to reach anyone else.
+- Assert on AWS `MessageId`, then poll the SES/EUM event log group for a delivery event (bounded wait, skips rather than fails on provider delay or missing log permissions).
 - Files: upload a small inline object, fetch the signed URL from a runner IP that is *not* in the WAF allow-list (proves `/files/*` is exempt), assert `200` and byte equality; tamper the signature and assert `403`; call with an expiry in the past and assert `403`; presigned `PUT` round-trip with a 10 MB file; `files_delete_object` then assert `403`.
 - Negative E2E: request from a non-allow-listed IP (runner IP not in WAF set) is expected to be `403` — run from a separate job with the IP set temporarily excluding the runner.
 
@@ -583,12 +583,12 @@ All docs are GitHub-flavored Markdown in the repo, rendered by GitHub (Mermaid d
 | `README.md` | Everyone | What it is, architecture diagram, 5-minute quick start, badges (CI, coverage, license) |
 | `docs/PRD.md` | Owner / contributors | This document |
 | `docs/architecture.md` | Contributors | Deep dive: request path, auth flow, data flow, why-not-X |
-| `docs/setup/aws-prerequisites.md` | Owner | SES domain identity + DKIM at GoDaddy, production-access request text, toll-free request + verification form answers, RCS brand/agent, Cognito users, signing key, Free-plan enrolment, checklist |
+| `docs/setup/aws-prerequisites.md` | Owner | SES domain identity (automated via `infra/ses-domain.yaml`), production-access request text, toll-free request + verification form answers, Cognito users, signing key, Free-plan enrolment, checklist |
 | `docs/setup/github.md` | Owner | Step-by-step `gh` CLI setup: repo, security features, environments, rulesets, OIDC variables, Actions permissions; runnable as `scripts/setup-github.sh` |
 | `docs/setup/dns.md` | Owner | GoDaddy → Route 53 subdomain delegation, certificate, SES sender-domain options |
 | `docs/setup/deploy.md` | Owner | Bootstrap stack, OIDC, first deploy, parameters reference |
 | `docs/setup/clients.md` | Owner | Claude Code (`claude mcp add …`), Claude Desktop custom connector, Routines; screenshots |
-| `docs/tools/*.md` | Owner + LLM | One page per tool: purpose, schema table, CLI equivalent, examples, guardrails, errors. Generated from the tool schemas by `scripts/gen-tool-docs.py` and checked in CI for drift |
+| `docs/tools/*.md` | Owner + LLM | One page per tool: description plus input/output JSON Schema, rendered from the live tool registry by `cmd/gendocs` and checked in CI for drift |
 | `docs/runbooks/auth-recovery.md` | Owner | What to do when a Routine gets 401s |
 | `docs/runbooks/rotate-secrets.md` | Owner | Origin secret, break-glass token, CloudFront signing key, Cognito client changes |
 | `docs/files.md` | Owner | How shared links work, what is and is not behind CloudFront, revoking a link, bucket quota |
@@ -745,6 +745,8 @@ claude.ai: edit the connector → request headers → `Authorization: Bearer <to
 
 | Date | Decision | Rationale |
 | --- | --- | --- |
+| 2026-08-23 | E2E authenticates with the Cognito **`client_credentials`** grant on the dev-only `ci` client; no CI user, no GitHub secret (client id/secret in SSM, read by the dev deploy role). Tool reference pages are generated by `cmd/gendocs` from the live tool registry with a CI drift check | The planned `USER_PASSWORD_AUTH` design cannot work: `InitiateAuth` access tokens never carry resource-server scopes, and pool-wide TOTP blocks a non-interactive user. Cognito has billed M2M per successful token request (no flat per-client fee) since 2025-11, so the grant fits the S1 budget |
+| 2026-08-23 | Lambda's `ses:SendEmail` grant is `identity/*` + the `ses:FromAddress` condition, not the sending-domain identity ARN | Found by the first live e2e run: SES authorizes sandbox sends against the **recipient's** identity ARN too, so the domain-scoped grant denied sends to the verified test mailbox; the FromAddress condition is what actually pins the sender |
 | 2026-08-22 | Drop SNS; use End User Messaging for all texting | SNS has no MMS/RCS; EUM covers SMS, MMS, RCS with fallback |
 | 2026-08-22 | Tool schemas mirror AWS API shapes (PascalCase) | Leverage LLM familiarity with AWS CLI/API |
 | 2026-08-22 | Pure CloudFormation, no SAM | Owner preference; inspectable templates |

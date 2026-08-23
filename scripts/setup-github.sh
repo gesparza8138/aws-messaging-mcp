@@ -71,11 +71,9 @@ gh secret set AWS_ACCOUNT_ID  --repo "$FULL" --body "$AWS_ACCOUNT_ID"
 gh secret set ARTIFACT_BUCKET --repo "$FULL" --body "aws-messaging-mcp-artifacts-$AWS_ACCOUNT_ID"
 gh secret set AWS_DEPLOY_ROLE_ARN --repo "$FULL" --env dev  --body "arn:aws:iam::$AWS_ACCOUNT_ID:role/aws-messaging-mcp-deploy-dev"
 gh secret set AWS_DEPLOY_ROLE_ARN --repo "$FULL" --env prod --body "arn:aws:iam::$AWS_ACCOUNT_ID:role/aws-messaging-mcp-deploy-prod"
-for v in E2E_MCP_URL E2E_COGNITO_CLIENT_ID E2E_TEST_EMAIL; do
-  if [[ -n "${!v:-}" ]]; then gh variable set "$v" --repo "$FULL" --env dev --body "${!v}"; else echo "   $v not set in env; set later with: gh variable set $v --env dev"; fi
-done
+# Email e2e configures itself from stack outputs and SSM; only the owner's
+# phone number (M3, kept out of the repo) is a GitHub secret.
 if [[ -n "${E2E_TEST_PHONE:-}" ]]; then gh secret set E2E_TEST_PHONE --repo "$FULL" --env dev --body "$E2E_TEST_PHONE"; else echo "   E2E_TEST_PHONE not set in env; set later with: gh secret set E2E_TEST_PHONE --env dev"; fi
-echo "   Secret E2E_TEST_USER_PASSWORD: set manually with  gh secret set E2E_TEST_USER_PASSWORD --repo $FULL --env dev"
 
 step "Actions permissions"
 api -X PUT "repos/$FULL/actions/permissions" -F enabled=true -f allowed_actions=selected

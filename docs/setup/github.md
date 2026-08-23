@@ -150,12 +150,10 @@ gh secret set AWS_DEPLOY_ROLE_ARN --env dev  --body "arn:aws:iam::$AWS_ACCOUNT_I
 gh secret set AWS_DEPLOY_ROLE_ARN --env prod --body "arn:aws:iam::$AWS_ACCOUNT_ID:role/aws-messaging-mcp-deploy-prod"
 gh variable set AWS_REGION --body "$AWS_REGION"
 
-# E2E test inputs (dev only).
-gh variable set E2E_MCP_URL           --env dev --body "https://dev.mcp.gabriel-esparza.com/mcp/"
-gh variable set E2E_COGNITO_CLIENT_ID --env dev --body "<ci-app-client-id>"
-gh variable set E2E_TEST_EMAIL        --env dev --body "esparza.gabriel@gmail.com"
-gh secret set E2E_TEST_PHONE          --env dev   # prompts; owner's mobile in E.164, kept out of the repo
-gh secret set E2E_TEST_USER_PASSWORD  --env dev   # prompts; paste the Cognito CI user's password
+# E2E test inputs (dev only). Email e2e needs nothing here: URLs and client
+# ids come from stack outputs, the client secret from SSM. Only the owner's
+# phone number (M3, kept out of the repo) is a GitHub secret.
+gh secret set E2E_TEST_PHONE          --env dev   # prompts; owner's mobile in E.164
 ```
 
 ## 4. Rulesets (branch and tag protection)
@@ -339,7 +337,7 @@ gh secret list --env dev
 gh api "repos/$GH_OWNER/$GH_REPO/actions/permissions"
 ```
 
-Expected: two active rulesets; `prod` shows `required_reviewers` and `wait_timer`; `dev` has three E2E variables plus the `AWS_DEPLOY_ROLE_ARN`, `E2E_TEST_PHONE`, and `E2E_TEST_USER_PASSWORD` secrets; Actions permissions are `selected`.
+Expected: two active rulesets; `prod` shows `required_reviewers` and `wait_timer`; `dev` has the `AWS_DEPLOY_ROLE_ARN` and `E2E_TEST_PHONE` secrets; Actions permissions are `selected`.
 
 ## 10. First push
 
