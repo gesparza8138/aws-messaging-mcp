@@ -150,6 +150,17 @@ Resources:
                   - sns:*
                   - xray:*
                 Resource: "*"
+              - Sid: AssociateEdgeWebAcl
+                # CloudFront verifies the caller can read the WebACL before
+                # attaching it to a distribution.
+                Effect: Allow
+                Action:
+                  - wafv2:GetWebACL
+                  - wafv2:GetWebACLForResource
+                  - wafv2:AssociateWebACL
+                  - wafv2:DisassociateWebACL
+                Resource:
+                  - !Sub arn:${AWS::Partition}:wafv2:us-east-1:${AWS::AccountId}:global/webacl/aws-messaging-mcp-*/*
               - Sid: AppStackBuckets
                 Effect: Allow
                 Action: s3:*
