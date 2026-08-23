@@ -200,6 +200,9 @@ Resources:
                     iam:PassedToService:
                       - lambda.amazonaws.com
                       - scheduler.amazonaws.com
+                      # M3: the EUM configuration set's CloudWatch Logs event
+                      # destination takes a role EUM assumes to write events.
+                      - sms-voice.amazonaws.com
 
   DeployRoleDev:
     Type: AWS::IAM::Role
