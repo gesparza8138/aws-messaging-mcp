@@ -59,9 +59,19 @@ Parameters:
     Type: String
     Default: esparza.gabriel@gmail.com
     Description: SNS subscription for operational alarms.
+  ReservedConcurrency:
+    Type: Number
+    Default: 0
+    MinValue: 0
+    Description: >-
+      Blast-radius cap (PRD S8). 0 disables the reservation: accounts with the
+      small default Lambda concurrency quota cannot reserve any without
+      dropping the unreserved pool below Lambda's minimum of 10. Set to 5
+      once the account quota has been raised.
 
 Conditions:
   IsProd: !Equals [!Ref Stage, prod]
+  HasReservedConcurrency: !Not [!Equals [!Ref ReservedConcurrency, 0]]
 
 Resources:
   UserPool:
@@ -213,6 +223,8 @@ Resources:
     Metadata:
       checkov:
         skip:
+          - id: CKV_AWS_115
+            comment: Reserved concurrency is parameterized (ReservedConcurrency) and disabled until the account's Lambda concurrency quota is raised - the small default quota cannot accommodate a reservation.
           - id: CKV_AWS_117
             comment: No VPC by design - the function only calls public AWS APIs; a VPC adds NAT cost and cold-start latency for nothing.
           - id: CKV_AWS_116
@@ -231,7 +243,7 @@ Resources:
       Architectures: [arm64]
       MemorySize: 512
       Timeout: 30
-      ReservedConcurrentExecutions: 5
+      ReservedConcurrentExecutions: !If [HasReservedConcurrency, !Ref ReservedConcurrency, !Ref AWS::NoValue]
       Role: !GetAtt ExecutionRole.Arn
       Handler: run.sh
       Layers: [!Ref LwaLayerArn]
