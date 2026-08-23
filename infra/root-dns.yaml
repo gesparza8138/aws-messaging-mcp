@@ -65,18 +65,6 @@ Resources:
       ResourceRecords:
         - !Ref DomainName
 
-  # GoDaddy Workspace Email MX records, carried over verbatim.
-  Mx:
-    Type: AWS::Route53::RecordSet
-    Properties:
-      HostedZoneId: !Ref RootZone
-      Name: !Ref DomainName
-      Type: MX
-      TTL: "3600"
-      ResourceRecords:
-        - 0 smtp.secureserver.net.
-        - 10 mailstore1.secureserver.net.
-
 Outputs:
   RootZoneId:
     Description: Hosted zone id for the root domain.

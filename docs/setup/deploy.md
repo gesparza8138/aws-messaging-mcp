@@ -86,6 +86,25 @@ aws ssm put-parameter --region us-west-2 --name /messaging-mcp/edge/web-acl-arn 
 aws ssm put-parameter --region us-west-2 --name /messaging-mcp/edge/ip-set-arn       --type String --value <AllowedIpSetArn> --overwrite
 ```
 
+## 3c. SES domain stack (`infra/ses-domain.yaml`, us-west-2, once)
+
+Creates the shared domain identity with Easy DKIM and writes every email-auth
+record itself: three DKIM CNAMEs, root SPF (`v=spf1 -all`), and DMARC into the
+Route 53 root zone (id in SSM `/messaging-mcp/root-zone-id`), plus the custom
+MAIL FROM `MX`/`TXT` into the `mcp` zone. Nothing to do at a registrar.
+
+```bash
+aws ssm put-parameter --region us-west-2 --name /messaging-mcp/root-zone-id --type String --value <RootZoneId> --overwrite
+aws cloudformation deploy --stack-name aws-messaging-mcp-ses-domain \
+  --template-file infra/ses-domain.yaml --region us-west-2 --no-execute-changeset
+# review, execute, then watch SES verify the identity (minutes):
+aws sesv2 get-email-identity --email-identity gabriel-esparza.com --region us-west-2 \
+  --query '{Verified:VerifiedForSendingStatus,Dkim:DkimAttributes.Status,MailFrom:MailFromAttributes.MailFromDomainStatus}'
+```
+
+SES sandbox status is per account-region, shared by both stages; until AWS
+grants production access the account can only send to verified addresses.
+
 ## 4. App stack (`infra/app.yaml`)
 
 Per-stage secrets must exist before the first deploy:
