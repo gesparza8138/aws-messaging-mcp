@@ -10,19 +10,17 @@ repos:
       - id: check-added-large-files
       - id: check-merge-conflict
 
-  # ruff runs from the project venv so pre-commit, CI, and editors all use the
-  # locked version - no drift between the hook mirror and uv.lock.
+  # Go tooling runs from the local toolchain so hooks, CI, and editors agree.
   - repo: local
     hooks:
-      - id: ruff-check
-        name: ruff check
-        entry: uv run ruff check --force-exclude
+      - id: gofmt
+        name: gofmt
+        entry: gofmt -l -w
         language: system
-        types_or: [python, pyi]
-        require_serial: true
-      - id: ruff-format
-        name: ruff format
-        entry: uv run ruff format --check --force-exclude
+        types: [go]
+      - id: go-vet
+        name: go vet
+        entry: go vet ./...
         language: system
-        types_or: [python, pyi]
-        require_serial: true
+        types: [go]
+        pass_filenames: false

@@ -47,7 +47,7 @@ api -X PUT "repos/$FULL/automated-security-fixes"
 try api -X PATCH "repos/$FULL" --input - <<'JSON'
 {"security_and_analysis":{"secret_scanning":{"status":"enabled"},"secret_scanning_push_protection":{"status":"enabled"},"dependency_graph":{"status":"enabled"}}}
 JSON
-try api -X PATCH "repos/$FULL/code-scanning/default-setup" -f state=configured -f query_suite=extended -f 'languages[]=python'
+try api -X PATCH "repos/$FULL/code-scanning/default-setup" -f state=configured -f query_suite=extended -f 'languages[]=go'
 try api -X PUT "repos/$FULL/private-vulnerability-reporting"
 
 step "Environments"

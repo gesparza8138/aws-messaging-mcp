@@ -1,19 +1,10 @@
-# Python
-__pycache__/
-*.py[cod]
-*.egg-info/
+# Go
 dist/
-build/
-.venv/
-.python-version.local
+coverage.out
+*.test
 
-# Tooling caches
-.pytest_cache/
-.mypy_cache/
+# IaC / CI tool caches (uvx)
 .ruff_cache/
-.coverage
-coverage.xml
-htmlcov/
 requirements-audit.txt
 
 # Node (commitlint / markdownlint run via npx)
@@ -27,4 +18,3 @@ node_modules/
 # Local environment
 .env
 .env.*
-coverage.json
