@@ -16,6 +16,7 @@ from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse
 from mcp.server.mcpserver import MCPServer
 from mcp.server.transport_security import TransportSecuritySettings
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 from aws_messaging_mcp import __version__
 from aws_messaging_mcp.auth.breakglass import verify_break_glass
@@ -173,8 +174,27 @@ def create_app(settings: Settings, key_resolver: KeyResolver | None = None) -> F
         """
         return _authorization_server_doc(settings)
 
-    app.mount("/mcp", mcp_app)
+    app.mount("/mcp", _NormalizeMcpPath(mcp_app))
     return app
+
+
+class _NormalizeMcpPath:
+    """Serve ``/mcp`` and ``/mcp/`` identically.
+
+    Anthropic's hosted bridge posts to ``/mcp`` without a trailing slash and
+    does not follow redirects, so the Mount's 307 must never fire.
+    """
+
+    def __init__(self, app: ASGIApp) -> None:
+        self._app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        """Rewrite an empty mount-relative path to ``/`` before dispatch."""
+        if scope["type"] == "http" and scope.get("path") == "":
+            scope = dict(scope)
+            scope["path"] = "/"
+            scope["raw_path"] = scope.get("raw_path", b"") + b"/"
+        await self._app(scope, receive, send)
 
 
 def _unauthorized(settings: Settings) -> JSONResponse:

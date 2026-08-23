@@ -19,9 +19,9 @@ def _headers(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}", "X-Origin-Secret": ORIGIN_SECRET}
 
 
-async def _call_hello(base_url: str, token: str, name: str = "Gabe") -> Any:
+async def _call_hello(base_url: str, token: str, name: str = "Gabe", path: str = "/mcp/") -> Any:
     http_client = create_mcp_http_client(headers=_headers(token))
-    transport = streamable_http_client(f"{base_url}/mcp/", http_client=http_client)
+    transport = streamable_http_client(f"{base_url}{path}", http_client=http_client)
     async with Client(transport) as client:
         tools = await client.list_tools()
         assert [tool.name for tool in tools.tools] == ["hello"]
@@ -55,3 +55,9 @@ async def test_missing_scope_is_tool_error_not_401(server: Server, mint_token: A
     assert result.is_error is True
     text = "".join(block.text for block in result.content if hasattr(block, "text"))
     assert "msg/read" in text
+
+
+async def test_roundtrip_without_trailing_slash(server: Server, mint_token: Any) -> None:
+    base_url, _ = server
+    result = await _call_hello(base_url, mint_token(), path="/mcp")
+    assert result.is_error is False
