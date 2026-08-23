@@ -265,9 +265,17 @@ The AWS side (`AWS::IAM::OIDCProvider` and two roles) is created by `infra/boots
 
 | Role | Trust condition (`token.actions.githubusercontent.com:sub`) | Used by |
 | --- | --- | --- |
-| `aws-messaging-mcp-deploy-dev` | `repo:<owner>/aws-messaging-mcp:environment:dev` | `deploy-dev.yml`, `e2e-tests` |
-| `aws-messaging-mcp-deploy-prod` | `repo:<owner>/aws-messaging-mcp:environment:prod` | `release.yml` (after approval) |
-| *(neither)* | `repo:<owner>/aws-messaging-mcp:pull_request` | PR jobs **do not** assume any AWS role |
+| `aws-messaging-mcp-deploy-dev` | `repo:<owner>@<owner-id>/aws-messaging-mcp@<repo-id>:environment:dev` | `deploy-dev.yml`, `e2e-tests` |
+| `aws-messaging-mcp-deploy-prod` | `repo:<owner>@<owner-id>/aws-messaging-mcp@<repo-id>:environment:prod` | `release.yml` (after approval) |
+| *(neither)* | `repo:...:pull_request` | PR jobs **do not** assume any AWS role |
+
+> [!NOTE]
+> GitHub embeds the immutable numeric owner and repository IDs in the `sub` claim
+> (`owner@id/repo@id`), which protects the trust policy against account/repo name
+> reuse. Confirm the IDs with `gh api repos/<owner>/<repo> --jq '{owner: .owner.id, repo: .id}'`
+> — they are the `GitHubOwnerId` / `GitHubRepoId` parameters of `infra/bootstrap.yaml`.
+> Verify the exact claim your tokens carry via a failed-assume event in CloudTrail
+> (`userIdentity.userName`) if in doubt.
 
 Both roles also require `token.actions.githubusercontent.com:aud = sts.amazonaws.com`. Because the condition is on the *environment*, the only way to obtain the prod role is a workflow run that passed the `prod` environment's approval gate — the GitHub configuration in §3 is therefore part of the AWS security boundary.
 
