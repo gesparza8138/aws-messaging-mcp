@@ -1,0 +1,403 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  aws-messaging-mcp app stack, M1 subset: Cognito user pool + app clients,
+  Lambda (Web Adapter) serving the MCP app, CloudFront distribution with the
+  edge WAF, and DNS records. Messaging resources (SES, EUM, buckets,
+  DynamoDB, scheduler, budget) arrive with M2-M4b. Deployed only via the
+  deploy-dev/release workflows using the CloudFormation service role; edge
+  values are resolved from SSM (/messaging-mcp/edge/*) so no ARNs live in
+  the repo.
+
+Parameters:
+  Stage:
+    Type: String
+    AllowedValues: [dev, prod]
+  DomainName:
+    Type: String
+    Default: mcp.gabriel-esparza.com
+    Description: Delegated subdomain; prod serves the apex, dev serves dev.<domain>.
+  CodeKey:
+    Type: String
+    Description: Artifact-bucket key of the application zip (content-hash keyed).
+  LwaLayerArn:
+    Type: String
+    Default: arn:aws:lambda:us-west-2:753240598075:layer:LambdaAdapterLayerArm64:25
+    Description: AWS Lambda Web Adapter public layer (arm64).
+  CognitoDomainPrefix:
+    Type: String
+    Description: Globally unique Cognito hosted-UI domain prefix for this stage.
+  AuthMetadataMode:
+    Type: String
+    AllowedValues: [direct, fronted]
+    Default: direct
+    Description: >-
+      direct advertises the Cognito issuer as authorization server; fronted
+      advertises this host, whose RFC 8414 document adds
+      code_challenge_methods_supported (PRD R2 mitigation).
+  OriginSecret:
+    Type: String
+    NoEcho: true
+    Description: >-
+      X-Origin-Secret value CloudFront injects toward the Function URL. The
+      deploy workflow reads it from SSM SecureString
+      /messaging-mcp/<stage>/origin-secret (rotate with scripts/rotate-secret.py);
+      never committed.
+  BreakGlassEnabled:
+    Type: String
+    AllowedValues: ["true", "false"]
+    Default: "false"
+    Description: Static-bearer fallback; PRD S10 keeps it off in prod by default.
+  BreakGlassSha256:
+    Type: String
+    NoEcho: true
+    Default: ""
+    Description: Hex SHA-256 of the break-glass token (never the token itself).
+  AlarmEmail:
+    Type: String
+    Default: esparza.gabriel@gmail.com
+    Description: SNS subscription for operational alarms.
+
+Conditions:
+  IsProd: !Equals [!Ref Stage, prod]
+
+Resources:
+  UserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: !Sub aws-messaging-mcp-${Stage}
+      UserPoolTier: ESSENTIALS
+      MfaConfiguration: "ON"
+      EnabledMfas: [SOFTWARE_TOKEN_MFA]
+      AdminCreateUserConfig:
+        AllowAdminCreateUserOnly: true
+      DeletionProtection: !If [IsProd, ACTIVE, INACTIVE]
+      UsernameAttributes: [email]
+      AutoVerifiedAttributes: [email]
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 16
+          RequireLowercase: true
+          RequireUppercase: true
+          RequireNumbers: true
+          RequireSymbols: true
+
+  UserPoolDomain:
+    Type: AWS::Cognito::UserPoolDomain
+    Properties:
+      Domain: !Ref CognitoDomainPrefix
+      UserPoolId: !Ref UserPool
+
+  ResourceServer:
+    Type: AWS::Cognito::UserPoolResourceServer
+    Properties:
+      Identifier: msg
+      Name: msg
+      UserPoolId: !Ref UserPool
+      Scopes:
+        - { ScopeName: read, ScopeDescription: Read-only discovery tools }
+        - { ScopeName: "email:send", ScopeDescription: Send email via SES }
+        - { ScopeName: "sms:send", ScopeDescription: Send SMS/MMS }
+        - { ScopeName: "rcs:send", ScopeDescription: Send RCS }
+        - { ScopeName: "files:write", ScopeDescription: Upload and share files }
+
+  ClaudeHostedClient:
+    Type: AWS::Cognito::UserPoolClient
+    DependsOn: ResourceServer
+    Properties:
+      ClientName: claude-hosted
+      UserPoolId: !Ref UserPool
+      GenerateSecret: false
+      SupportedIdentityProviders: [COGNITO]
+      AllowedOAuthFlows: [code]
+      AllowedOAuthFlowsUserPoolClient: true
+      AllowedOAuthScopes:
+        - openid
+        - msg/read
+        - msg/email:send
+        - msg/sms:send
+        - msg/rcs:send
+        - msg/files:write
+      CallbackURLs:
+        - https://claude.ai/api/mcp/auth_callback
+      ExplicitAuthFlows: [ALLOW_REFRESH_TOKEN_AUTH]
+      AccessTokenValidity: 15
+      IdTokenValidity: 15
+      RefreshTokenValidity: 365
+      TokenValidityUnits:
+        AccessToken: minutes
+        IdToken: minutes
+        RefreshToken: days
+      EnableTokenRevocation: true
+      PreventUserExistenceErrors: ENABLED
+
+  ClaudeCodeClient:
+    Type: AWS::Cognito::UserPoolClient
+    DependsOn: ResourceServer
+    Properties:
+      ClientName: claude-code
+      UserPoolId: !Ref UserPool
+      GenerateSecret: false
+      SupportedIdentityProviders: [COGNITO]
+      AllowedOAuthFlows: [code]
+      AllowedOAuthFlowsUserPoolClient: true
+      AllowedOAuthScopes:
+        - openid
+        - msg/read
+        - msg/email:send
+        - msg/sms:send
+        - msg/rcs:send
+        - msg/files:write
+      CallbackURLs:
+        # Cognito matches redirect URIs exactly, port included (PRD 6.2).
+        - http://localhost:8765/callback
+        - http://127.0.0.1:8765/callback
+      ExplicitAuthFlows: [ALLOW_REFRESH_TOKEN_AUTH]
+      AccessTokenValidity: 15
+      IdTokenValidity: 15
+      RefreshTokenValidity: 365
+      TokenValidityUnits:
+        AccessToken: minutes
+        IdToken: minutes
+        RefreshToken: days
+      EnableTokenRevocation: true
+      PreventUserExistenceErrors: ENABLED
+
+  LogGroup:
+    Type: AWS::Logs::LogGroup
+    Metadata:
+      checkov:
+        skip:
+          - id: CKV_AWS_158
+            comment: Default SSE on CloudWatch Logs suffices (PRD S6 requires default encryption); logs carry no message bodies or tokens by design (PRD S5), and a CMK adds cost and key-policy surface for no threat-model gain here.
+    Properties:
+      LogGroupName: !Sub /aws/lambda/aws-messaging-mcp-${Stage}
+      RetentionInDays: !If [IsProd, 90, 14]
+
+  ExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub aws-messaging-mcp-${Stage}-lambda
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: lambda.amazonaws.com }
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: runtime
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: Logs
+                Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub ${LogGroup.Arn}:*
+              - Sid: Secrets
+                Effect: Allow
+                Action: ssm:GetParameter
+                Resource: !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/messaging-mcp/${Stage}/*
+              - Sid: Tracing
+                Effect: Allow
+                Action:
+                  - xray:PutTraceSegments
+                  - xray:PutTelemetryRecords
+                Resource: "*"
+
+  McpFunction:
+    Type: AWS::Lambda::Function
+    Metadata:
+      checkov:
+        skip:
+          - id: CKV_AWS_117
+            comment: No VPC by design - the function only calls public AWS APIs; a VPC adds NAT cost and cold-start latency for nothing.
+          - id: CKV_AWS_116
+            comment: No DLQ - invocations are synchronous (Function URL); failures surface to the caller.
+          - id: CKV_AWS_173
+            comment: Environment variables hold no secrets (the origin secret is read from SSM at cold start); default encryption suffices.
+          - id: CKV_AWS_272
+            comment: Code signing deferred; artifacts are content-hash keyed in a private bucket written only by CI.
+      cfn_nag:
+        rules_to_suppress:
+          - id: W89
+            reason: No VPC by design; see checkov CKV_AWS_117 justification.
+    Properties:
+      FunctionName: !Sub aws-messaging-mcp-${Stage}
+      Runtime: python3.13
+      Architectures: [arm64]
+      MemorySize: 512
+      Timeout: 30
+      ReservedConcurrentExecutions: 5
+      Role: !GetAtt ExecutionRole.Arn
+      Handler: run.sh
+      Layers: [!Ref LwaLayerArn]
+      Code:
+        S3Bucket: !Sub aws-messaging-mcp-artifacts-${AWS::AccountId}
+        S3Key: !Ref CodeKey
+      TracingConfig: { Mode: Active }
+      Environment:
+        Variables:
+          AWS_LAMBDA_EXEC_WRAPPER: /opt/bootstrap
+          PORT: "8000"
+          STAGE: !Ref Stage
+          MCP_RESOURCE_URL: !If
+            - IsProd
+            - !Sub https://${DomainName}/mcp/
+            - !Sub https://dev.${DomainName}/mcp/
+          COGNITO_ISSUER: !Sub https://cognito-idp.${AWS::Region}.amazonaws.com/${UserPool}
+          COGNITO_DOMAIN: !Sub https://${CognitoDomainPrefix}.auth.${AWS::Region}.amazoncognito.com
+          ALLOWED_CLIENT_IDS: !Join [",", [!Ref ClaudeHostedClient, !Ref ClaudeCodeClient]]
+          AUTH_METADATA_MODE: !Ref AuthMetadataMode
+          REQUIRE_ORIGIN_SECRET: "true"
+          ORIGIN_SECRET_PARAM: !Sub /messaging-mcp/${Stage}/origin-secret
+          BREAK_GLASS_ENABLED: !Ref BreakGlassEnabled
+          BREAK_GLASS_SHA256: !Ref BreakGlassSha256
+          BREAK_GLASS_SCOPES: msg/read
+
+  McpFunctionUrl:
+    Type: AWS::Lambda::Url
+    Metadata:
+      checkov:
+        skip:
+          - id: CKV_AWS_258
+            comment: Deliberate PRD 4.2 design - IAM auth (OAC) on the URL would require x-amz-content-sha256, which MCP clients never send. The app rejects requests without the CloudFront-injected origin secret before any other work, and the URL hostname is never published.
+    Properties:
+      TargetFunctionArn: !Ref McpFunction
+      AuthType: NONE
+      InvokeMode: BUFFERED
+
+  McpFunctionUrlPermission:
+    Type: AWS::Lambda::Permission
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: F13
+            reason: AuthType NONE is the documented CloudFront-origin pattern (PRD 4.2) - OAC would require x-amz-content-sha256 which MCP clients do not send; the app rejects any request lacking the CloudFront-injected origin secret before token work.
+    Properties:
+      FunctionName: !Ref McpFunction
+      Action: lambda:InvokeFunctionUrl
+      Principal: "*"
+      FunctionUrlAuthType: NONE
+
+  Distribution:
+    Type: AWS::CloudFront::Distribution
+    Metadata:
+      checkov:
+        skip:
+          - id: CKV_AWS_86
+            comment: Access logging deferred to M5 hardening with the rest of observability.
+          - id: CKV2_AWS_32
+            comment: Response-headers policy ships with the /files/* behavior in M4b; the M1 default behavior serves only the authenticated JSON API.
+          - id: CKV_AWS_310
+            comment: Single-origin API; origin failover does not apply.
+          - id: CKV2_AWS_42
+            comment: Custom SSL certificate IS configured via an SSM dynamic reference the scanner cannot resolve statically.
+      cfn_nag:
+        rules_to_suppress:
+          - id: W10
+            reason: Access logging deferred to M5 hardening.
+          - id: W70
+            reason: Minimum TLS 1.2 is set; the scanner cannot resolve the SSM dynamic reference for the certificate.
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        Comment: !Sub aws-messaging-mcp ${Stage}
+        HttpVersion: http2and3
+        IPV6Enabled: true
+        PriceClass: PriceClass_100
+        WebACLId: "{{resolve:ssm:/messaging-mcp/edge/web-acl-arn}}"
+        Aliases:
+          - !If [IsProd, !Ref DomainName, !Sub "dev.${DomainName}"]
+        ViewerCertificate:
+          AcmCertificateArn: "{{resolve:ssm:/messaging-mcp/edge/certificate-arn}}"
+          SslSupportMethod: sni-only
+          MinimumProtocolVersion: TLSv1.2_2021
+        Origins:
+          - Id: mcp-lambda
+            DomainName: !Select [2, !Split ["/", !GetAtt McpFunctionUrl.FunctionUrl]]
+            CustomOriginConfig:
+              OriginProtocolPolicy: https-only
+              OriginSSLProtocols: [TLSv1.2]
+            OriginCustomHeaders:
+              - HeaderName: X-Origin-Secret
+                HeaderValue: !Ref OriginSecret
+        DefaultCacheBehavior:
+          TargetOriginId: mcp-lambda
+          ViewerProtocolPolicy: https-only
+          AllowedMethods: [GET, HEAD, OPTIONS, PUT, POST, PATCH, DELETE]
+          CachedMethods: [GET, HEAD]
+          Compress: false
+          # Managed policies: CachingDisabled + AllViewerExceptHostHeader.
+          CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad
+          OriginRequestPolicyId: b689b0a8-53d0-40ab-baf2-68738e2966ac
+
+  DnsRecordA:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: "{{resolve:ssm:/messaging-mcp/edge/hosted-zone-id}}"
+      Name: !If [IsProd, !Ref DomainName, !Sub "dev.${DomainName}"]
+      Type: A
+      AliasTarget:
+        DNSName: !GetAtt Distribution.DomainName
+        HostedZoneId: Z2FDTNDATAQYW2
+
+  DnsRecordAaaa:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: "{{resolve:ssm:/messaging-mcp/edge/hosted-zone-id}}"
+      Name: !If [IsProd, !Ref DomainName, !Sub "dev.${DomainName}"]
+      Type: AAAA
+      AliasTarget:
+        DNSName: !GetAtt Distribution.DomainName
+        HostedZoneId: Z2FDTNDATAQYW2
+
+  AlarmTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub aws-messaging-mcp-${Stage}-alarms
+      KmsMasterKeyId: alias/aws/sns
+
+  AlarmSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn: !Ref AlarmTopic
+      Protocol: email
+      Endpoint: !Ref AlarmEmail
+
+  LambdaErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub aws-messaging-mcp-${Stage}-lambda-errors
+      AlarmDescription: Any Lambda error in a 5-minute window (PRD 13).
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions:
+        - { Name: FunctionName, Value: !Ref McpFunction }
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlarmTopic]
+
+Outputs:
+  McpUrl:
+    Description: Canonical MCP endpoint for this stage.
+    Value: !If [IsProd, !Sub "https://${DomainName}/mcp/", !Sub "https://dev.${DomainName}/mcp/"]
+  UserPoolId:
+    Value: !Ref UserPool
+  HostedUiUrl:
+    Description: Cognito hosted-UI base URL.
+    Value: !Sub https://${CognitoDomainPrefix}.auth.${AWS::Region}.amazoncognito.com
+  ClaudeHostedClientId:
+    Description: Paste into the Claude Desktop / claude.ai custom connector.
+    Value: !Ref ClaudeHostedClient
+  ClaudeCodeClientId:
+    Description: Use with claude mcp add --client-id.
+    Value: !Ref ClaudeCodeClient
+  DistributionId:
+    Value: !Ref Distribution
+  FunctionName:
+    Value: !Ref McpFunction

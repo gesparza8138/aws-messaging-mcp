@@ -72,11 +72,43 @@ Run the `verify-oidc` workflow (`gh workflow run verify-oidc.yml`):
   it waits for the required reviewer — either outcome proves a prod deploy
   cannot happen without the gate.
 
-## 4. App stack
+## 3b. Edge -> app handoff (SSM)
 
-Arrives with M1 (PR-4): built and deployed by `deploy-dev.yml` under the `dev`
-environment, using the artifact bucket and the CloudFormation service role.
-Parameters reference will be documented alongside `infra/app.yaml`.
+The app stack resolves edge values through SSM dynamic references so no ARN
+ever enters the repo. After any edge (re)deploy, write its outputs to
+us-west-2 (note: SSM reserves names starting with `aws`, hence the
+`/messaging-mcp/` prefix):
+
+```bash
+aws ssm put-parameter --region us-west-2 --name /messaging-mcp/edge/hosted-zone-id   --type String --value <HostedZoneId>   --overwrite
+aws ssm put-parameter --region us-west-2 --name /messaging-mcp/edge/certificate-arn  --type String --value <CertificateArn>  --overwrite
+aws ssm put-parameter --region us-west-2 --name /messaging-mcp/edge/web-acl-arn      --type String --value <WebAclArn>      --overwrite
+aws ssm put-parameter --region us-west-2 --name /messaging-mcp/edge/ip-set-arn       --type String --value <AllowedIpSetArn> --overwrite
+```
+
+## 4. App stack (`infra/app.yaml`)
+
+Per-stage secrets must exist before the first deploy:
+
+```bash
+uv run python scripts/rotate-secret.py --stage dev   # origin secret + break-glass token
+```
+
+Then deploy through GitHub Actions only:
+
+1. `gh workflow run deploy-dev.yml` - builds the arm64 artifact, uploads it
+   content-hash-keyed, creates a change set, and prints the summary to the
+   job summary **without executing**.
+2. Review, then `gh workflow run deploy-dev.yml -f execute=true` to apply.
+
+Stage parameters live in `infra/params/{dev,prod}.json`; secret-bearing
+values (`OriginSecret`, `BreakGlassSha256`) are fetched from SSM by the
+workflow and passed as NoEcho parameters, never committed. After the stack is
+up, create the owner user:
+
+```bash
+./scripts/bootstrap-user.sh --stage dev --email <owner-email>
+```
 
 ## Rollback
 

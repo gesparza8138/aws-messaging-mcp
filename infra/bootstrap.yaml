@@ -243,6 +243,13 @@ Resources:
                 Resource:
                   - !GetAtt ArtifactBucket.Arn
                   - !Sub ${ArtifactBucket.Arn}/*
+              - Sid: ReadStageSecrets
+                # The deploy workflow reads /messaging-mcp/<stage>/* to pass
+                # NoEcho parameters (origin secret, break-glass hash).
+                Effect: Allow
+                Action: ssm:GetParameter
+                Resource:
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/messaging-mcp/*
               - Sid: UpdateWafIpSetForE2e
                 # R7/F7: the e2e job may temporarily add the runner's egress
                 # IP to the allow-list for the duration of a test run.
@@ -307,6 +314,13 @@ Resources:
                 Resource:
                   - !GetAtt ArtifactBucket.Arn
                   - !Sub ${ArtifactBucket.Arn}/*
+              - Sid: ReadStageSecrets
+                # The deploy workflow reads /messaging-mcp/<stage>/* to pass
+                # NoEcho parameters (origin secret, break-glass hash).
+                Effect: Allow
+                Action: ssm:GetParameter
+                Resource:
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/messaging-mcp/*
 
 Outputs:
   DevDeployRoleArn:
