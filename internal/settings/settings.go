@@ -56,6 +56,23 @@ type Settings struct {
 	BreakGlassSHA256 string
 	// BreakGlassScopes are granted to a break-glass caller.
 	BreakGlassScopes []string
+	// SESConfigurationSet is injected into every send (never caller-set).
+	SESConfigurationSet string
+	// SESReplyTo is the default Reply-To when the caller omits one.
+	SESReplyTo string
+	// SESSenderAddresses is the sender allow-list (PRD §8).
+	SESSenderAddresses []string
+	// RecipientAllowList restricts recipients when non-empty ("test mode").
+	RecipientAllowList []string
+	// MaxRecipients caps recipients per email.
+	MaxRecipients int
+	// RateLimitPerHour / RateLimitPerDay bound sends per tool (0 = off).
+	RateLimitPerHour int
+	RateLimitPerDay  int
+	// EmailMaxRawBytes caps the decoded size of Content.Raw.
+	EmailMaxRawBytes int
+	// RateLimitTable is the DynamoDB counters table name.
+	RateLimitTable string
 }
 
 // JWKSURL returns the Cognito JWKS endpoint for the configured issuer.
@@ -89,7 +106,30 @@ func FromEnv(lookup Lookup) Settings {
 		BreakGlassEnabled:   strings.EqualFold(get("BREAK_GLASS_ENABLED", "false"), "true"),
 		BreakGlassSHA256:    get("BREAK_GLASS_SHA256", ""),
 		BreakGlassScopes:    splitCSV(get("BREAK_GLASS_SCOPES", "msg/read")),
+		SESConfigurationSet: get("SES_CONFIGURATION_SET", ""),
+		SESReplyTo:          get("SES_REPLY_TO", ""),
+		SESSenderAddresses:  splitCSV(get("SES_SENDER_ADDRESSES", "")),
+		RecipientAllowList:  splitCSV(get("RECIPIENT_ALLOW_LIST", "")),
+		MaxRecipients:       intOr(get("MAX_RECIPIENTS", ""), 10),
+		RateLimitPerHour:    intOr(get("RATE_LIMIT_PER_HOUR", ""), 20),
+		RateLimitPerDay:     intOr(get("RATE_LIMIT_PER_DAY", ""), 300),
+		EmailMaxRawBytes:    intOr(get("EMAIL_MAX_RAW_BYTES", ""), 10*1024*1024),
+		RateLimitTable:      get("RATE_LIMIT_TABLE", ""),
 	}
+}
+
+func intOr(value string, fallback int) int {
+	if value == "" {
+		return fallback
+	}
+	n := 0
+	for _, c := range value {
+		if c < '0' || c > '9' {
+			return fallback
+		}
+		n = n*10 + int(c-'0')
+	}
+	return n
 }
 
 // ParameterFetcher fetches a decrypted SSM parameter by name.

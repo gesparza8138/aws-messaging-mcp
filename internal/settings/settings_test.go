@@ -95,3 +95,16 @@ func TestResolveOriginSecret(t *testing.T) {
 		t.Fatal("fetch error must propagate")
 	}
 }
+
+func TestIntOr(t *testing.T) {
+	s := FromEnv(mapLookup(map[string]string{"MAX_RECIPIENTS": "5", "RATE_LIMIT_PER_HOUR": "junk", "EMAIL_MAX_RAW_BYTES": ""}))
+	if s.MaxRecipients != 5 {
+		t.Fatalf("parsed int: %d", s.MaxRecipients)
+	}
+	if s.RateLimitPerHour != 20 {
+		t.Fatalf("junk must fall back: %d", s.RateLimitPerHour)
+	}
+	if s.EmailMaxRawBytes != 10*1024*1024 {
+		t.Fatalf("empty must fall back: %d", s.EmailMaxRawBytes)
+	}
+}

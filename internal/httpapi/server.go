@@ -33,6 +33,12 @@ func PrincipalFrom(ctx context.Context) (auth.Principal, bool) {
 	return p, ok
 }
 
+// WithPrincipal attaches p to ctx; the middleware uses it, and tool tests use
+// it to simulate an authenticated request.
+func WithPrincipal(ctx context.Context, p auth.Principal) context.Context {
+	return context.WithValue(ctx, principalKey{}, p)
+}
+
 // NewHandler builds the complete http.Handler. No redirects are ever issued:
 // the Host header at the Lambda is the raw Function URL, so a redirect would
 // leak it past CloudFront.
@@ -76,7 +82,7 @@ func authMiddleware(cfg Config, next http.Handler) http.Handler {
 			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
 			return
 		}
-		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), principalKey{}, principal)))
+		next.ServeHTTP(w, r.WithContext(WithPrincipal(r.Context(), principal)))
 	})
 }
 

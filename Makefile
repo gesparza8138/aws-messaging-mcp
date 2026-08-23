@@ -8,7 +8,7 @@ build:
 
 test:
 	go test -race -coverpkg=./internal/... -coverprofile=coverage.out -covermode=atomic ./...
-	./scripts/check_coverage.sh coverage.out internal/auth/
+	./scripts/check_coverage.sh coverage.out internal/auth/ internal/guardrails/
 
 lint:
 	test -z "$$(gofmt -l .)" || { gofmt -l .; echo "gofmt: files need formatting"; exit 1; }
