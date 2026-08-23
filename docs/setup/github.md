@@ -322,7 +322,7 @@ steps:
 ## 8. Labels
 
 ```bash
-for l in "dependencies:0366d6" "ci:fbca04" "security:d73a4a" "docs:0075ca" "tool:email:c2e0c6" "tool:sms:c2e0c6" "tool:rcs:c2e0c6" "tool:files:c2e0c6" "infra:bfd4f2" "good first issue:7057ff"; do
+for l in "dependencies:0366d6" "ci:fbca04" "security:d73a4a" "docs:0075ca" "tool:email:c2e0c6" "tool:sms:c2e0c6" "tool:files:c2e0c6" "infra:bfd4f2" "good first issue:7057ff"; do
   gh label create "${l%%:*}" --color "${l##*:}" --force
 done
 ```

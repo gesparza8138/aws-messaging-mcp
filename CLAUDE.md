@@ -4,7 +4,7 @@ Project conventions for Claude Code. Read `docs/PRD.md` before planning anything
 
 ## What this is
 
-A stateless MCP server (Streamable HTTP) on AWS Lambda that exposes tools for Amazon SES email, AWS End User Messaging SMS/MMS/RCS, and CloudFront-signed file sharing. Single owner (Gabe), clients are Claude Code and Claude Desktop/Routines. Single AWS account (ID not recorded in this public repo — `aws sts get-caller-identity` locally, GitHub secret `AWS_ACCOUNT_ID` in CI), region `us-west-2`, hostnames `mcp.gabriel-esparza.com` (prod) and `dev.mcp.gabriel-esparza.com` (dev).
+A stateless MCP server (Streamable HTTP) on AWS Lambda that exposes tools for Amazon SES email, AWS End User Messaging SMS/MMS (RCS descoped - PRD Appendix C), and CloudFront-signed file sharing. Single owner (Gabe), clients are Claude Code and Claude Desktop/Routines. Single AWS account (ID not recorded in this public repo — `aws sts get-caller-identity` locally, GitHub secret `AWS_ACCOUNT_ID` in CI), region `us-west-2`, hostnames `mcp.gabriel-esparza.com` (prod) and `dev.mcp.gabriel-esparza.com` (dev).
 
 ## Hard rules
 
@@ -40,10 +40,10 @@ See `docs/PRD.md` Appendix A. Key dirs: `cmd/{server,ops}`, `internal/{settings,
 
 - Use plan mode for anything touching `infra/` or `auth/`; present the plan, get approval, then implement.
 - Prefer small PRs per milestone task; each PR updates docs and tests alongside code.
-- When an AWS API shape is uncertain (especially `SendRcsMessage`), inspect the SDK's input struct (`go doc github.com/aws/aws-sdk-go-v2/service/pinpointsmsvoicev2.SendRcsMessageInput`) rather than guessing from docs.
+- When an AWS API shape is uncertain, inspect the SDK's input struct (`go doc github.com/aws/aws-sdk-go-v2/service/pinpointsmsvoicev2.SendTextMessageInput`) rather than guessing from docs.
 - Record decisions in `docs/PRD.md` Appendix C (decision log) with the date.
 - If something in the PRD turns out to be wrong or impossible, stop and say so; don't silently work around it.
 
 ## Milestones
 
-M0 scaffold + CI → M1 auth spike → M2 email → M3 SMS/MMS → M4 RCS → M4b files → M5 hardening. Details and exit criteria in `docs/PRD.md` §16. Manual prerequisites (registrations, DNS, Cognito user) are in `docs/setup/`.
+M0 scaffold + CI → M1 auth spike → M2 email → M3 SMS/MMS → M4b files → M5 hardening (M4 RCS removed). Details and exit criteria in `docs/PRD.md` §16. Manual prerequisites (registrations, DNS, Cognito user) are in `docs/setup/`.
