@@ -17,7 +17,7 @@ exact-match redirect URIs, PKCE, TOTP MFA, and 15-minute access tokens.
 
 ## First login (once per stage)
 
-The owner user is created by `scripts/bootstrap-user.sh` with a temporary
+The owner user is created by `go run ./cmd/ops bootstrap-user` with a temporary
 password. The **first OAuth flow from any client** walks you through: change
 password → enrol TOTP (scan the QR code with your authenticator app) → consent.
 Every later login is password + TOTP code.
@@ -82,5 +82,5 @@ claude mcp add --transport http aws-messaging-dev-bg https://dev.mcp.gabriel-esp
   --header "Authorization: Bearer ${MSG_MCP_BREAK_GLASS}"
 ```
 
-The token is shown once by `scripts/rotate-secret.py`; only its SHA-256 is
-stored. Rotate it again when OAuth is back.
+The token is shown once by `go run ./cmd/ops rotate-secret`; only its SHA-256
+is stored. Rotate it again when OAuth is back.

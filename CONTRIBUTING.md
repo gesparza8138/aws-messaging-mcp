@@ -21,14 +21,13 @@ truth for scope and architecture.
 
 ## Toolchain
 
-Python 3.13 with [uv](https://docs.astral.sh/uv/):
+Go (see `go.mod`) plus `golangci-lint`; `uv` only runs the IaC scanners and pre-commit:
 
 ```bash
-uv sync                     # venv + locked dependencies
-uv run pre-commit install   # optional: run hooks on every commit
-make test                   # pytest with coverage gate (>= 90 %)
-make lint                   # ruff check + format
-make typecheck              # mypy --strict
+uvx pre-commit install      # optional: run hooks on every commit
+make test                   # go test -race with coverage gates (>= 90 %, auth 100 %)
+make lint                   # gofmt + golangci-lint
+make vet                    # go vet
 make iac-lint               # cfn-lint + checkov + cfn_nag over infra/
 ```
 

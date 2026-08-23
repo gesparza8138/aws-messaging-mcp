@@ -39,7 +39,7 @@ Parameters:
     Description: >-
       X-Origin-Secret value CloudFront injects toward the Function URL. The
       deploy workflow reads it from SSM SecureString
-      /messaging-mcp/<stage>/origin-secret (rotate with scripts/rotate-secret.py);
+      /messaging-mcp/<stage>/origin-secret (rotate with cmd/ops rotate-secret);
       never committed.
   BreakGlassEnabled:
     Type: String

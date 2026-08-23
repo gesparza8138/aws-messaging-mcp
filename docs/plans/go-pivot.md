@@ -2,7 +2,7 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Approved 2026-08-23 — executing |
+| Status | Executed 2026-08-23 — Go on dev and prod; cold start 2,950 ms → 217 ms |
 | Supersedes | Python toolchain sections of `docs/plans/m0-m1.md`; `docs/plans/m2.md` to be revised for Go before approval |
 
 ## Context

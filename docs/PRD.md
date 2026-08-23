@@ -11,7 +11,7 @@ A serverless MCP server on AWS Lambda that lets Claude Code and Claude Desktop s
 | AWS account | Single account — ID kept out of the repo (GitHub secret `AWS_ACCOUNT_ID`); dev and prod stacks side by side |
 | Target region | `us-west-2` (single region; ACM + WAF for CloudFront in `us-east-1`) |
 | Hostnames | `mcp.gabriel-esparza.com` (prod), `dev.mcp.gabriel-esparza.com` (dev) — whole-domain DNS on Route 53 (registration at GoDaddy), see [`docs/setup/dns.md`](setup/dns.md) |
-| Runtime | Python 3.13 on AWS Lambda (arm64) |
+| Runtime | Go on AWS Lambda (`provided.al2023`, arm64) — pivoted from Python 2026-08-23, see Appendix C |
 
 ---
 
@@ -99,10 +99,10 @@ flowchart LR
         CF[Distribution<br/>caching disabled]
     end
 
-    subgraph Compute["Lambda (arm64, Python 3.13)"]
+    subgraph Compute["Lambda (arm64, Go, provided.al2023)"]
         FURL[Function URL<br/>AUTH_TYPE=NONE]
-        LWA[Lambda Web Adapter]
-        APP[FastAPI + FastMCP<br/>auth middleware<br/>guardrails]
+        LWA[Function URL adapter]
+        APP[net/http + MCP Go SDK<br/>auth middleware<br/>guardrails]
     end
 
     subgraph Identity
@@ -143,7 +143,7 @@ flowchart LR
 1. Client sends `POST /mcp/` with `Authorization: Bearer <Cognito access token>`.
 2. **WAF** (attached to the CloudFront distribution) allows only Anthropic's published egress range `160.79.104.0/21` plus any owner-managed IP set entries (e.g. home IP for Claude Code) for the MCP path. Everything else gets `403` at the edge. Requests to `/files/*` are **exempt** from the IP rule (a scope-down statement on the URI path) because download links are meant for arbitrary end users; they are protected by the signed-URL signature instead.
 3. **CloudFront** forwards the request to the Lambda Function URL with caching disabled and an injected `X-Origin-Secret` header.
-4. **Lambda Web Adapter** turns the Function URL event into an HTTP request for the FastAPI app.
+4. The in-process **Function URL adapter** turns the event into an `http.Request` for the Go handler.
 5. **Auth middleware** (in order): verify `X-Origin-Secret` matches SSM value → verify JWT signature against Cognito JWKS, `iss`, `client_id`, `token_use=access`, expiry → extract scopes → or, if the bearer matches the break-glass token hash, grant the configured scope set.
 6. **FastMCP** dispatches the tool call. Each tool checks its required scope, runs guardrails, then calls boto3.
 7. Structured log line written; response returned.
@@ -488,7 +488,7 @@ Pure CloudFormation (YAML), no SAM transform, no CDK. Deployed with `aws cloudfo
 | `FilesResponseHeadersPolicy` | `AWS::CloudFront::ResponseHeadersPolicy` | nosniff, CSP, no-store |
 | `SigningPrivateKeyParam` | `AWS::SSM::Parameter` | Placeholder; value set by rotation script |
 | `FilesCleanupSchedule` | `AWS::Scheduler::Schedule` | Daily, invokes `McpFunction` with `{"task":"files-cleanup"}` to delete objects past `expires-at` |
-| `OriginSecretParam`, `BreakGlassHashParam` | `AWS::SSM::Parameter` | Created as placeholders; values rotated out-of-band (`scripts/rotate-secret.py`) |
+| *(SSM secrets)* | — | `/messaging-mcp/<stage>/origin-secret` (SecureString) and `/messaging-mcp/<stage>/break-glass-sha256` are created and rotated out-of-band by `cmd/ops rotate-secret`, not by the template; the deploy workflows pass them as NoEcho parameters |
 | `SesConfigurationSet` + `EventDestination` | `AWS::SES::ConfigurationSet*` | Delivery/bounce/complaint events → CloudWatch Logs |
 | `EumConfigurationSet` + `EventDestination` | `AWS::PinpointSMSVoiceV2::*` *(if CFN coverage allows; otherwise custom resource or documented manual step)* | Delivery events → CloudWatch Logs |
 | `LogGroup` | `AWS::Logs::LogGroup` | 14-day retention (dev), 90-day (prod) |
@@ -501,7 +501,7 @@ Pure CloudFormation (YAML), no SAM transform, no CDK. Deployed with `aws cloudfo
 - Verify SES sender identity(ies) and request production access (exit sandbox) for `prod`.
 - Request a toll-free number (or 10DLC), complete registration, enable SMS + MMS.
 - Create an RCS agent, complete brand verification, and a country launch (or testing) registration; register test devices for `dev`.
-- Create the single Cognito user and enrol TOTP (script provided: `scripts/bootstrap-user.sh`).
+- Create the single Cognito user and enrol TOTP (`go run ./cmd/ops bootstrap-user`).
 - Enrol the CloudFront distribution in the Free flat-rate plan (console action at time of writing).
 - Populate the two SSM secure parameters.
 - Add the four `NS` records for `mcp` at GoDaddy after the `edge` stack outputs the hosted zone's name servers ([`docs/setup/dns.md`](setup/dns.md)). Adding DKIM CNAMEs at GoDaddy is required only if `prod` sends from `@gabriel-esparza.com`.
@@ -536,11 +536,11 @@ flowchart LR
 
 | Job | Tooling | Gate |
 | --- | --- | --- |
-| `quality` | `ruff check`, `ruff format --check`, `mypy --strict`, `pre-commit run --all-files` | must pass |
-| `unit-tests` | `pytest` with `pytest-cov`, `moto` for AWS mocks, matrix on Python 3.13 | ≥ 90 % line coverage, 100 % on `auth/` and `guardrails/` |
-| `security-scans` | `bandit -ll`, `pip-audit` (against `uv.lock`), `gitleaks`, GitHub CodeQL (python), GitHub dependency-review action | no high/critical |
+| `quality` | `gofmt`, `go vet`, `golangci-lint`, `pre-commit run --all-files` | must pass |
+| `unit-tests` | `go test -race` with `-coverpkg=./internal/...`; fakes behind interfaces for AWS | ≥ 90 % statement coverage, 100 % on `internal/auth/` and `internal/guardrails/` |
+| `security-scans` | `gosec`, `govulncheck`, `gitleaks`, GitHub CodeQL (go), GitHub dependency-review action | no high/critical |
 | `iac-scans` | `cfn-lint`, `checkov -d infra/`, `cfn_nag_scan` | no high/critical |
-| `build-artifact` | `uv export` → `pip install --platform manylinux2014_aarch64 --target build/` → zip → upload to artifact bucket keyed by content hash; attach SBOM (`cyclonedx-py`) | reproducible hash |
+| `build-artifact` | `CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath` → zip `bootstrap` → upload to artifact bucket keyed by content hash | reproducible hash |
 | `deploy-dev` | `aws cloudformation deploy --template-file infra/app.yaml --parameter-overrides Stage=dev CodeKey=...` with change-set review logged | stack `UPDATE_COMPLETE` |
 | `e2e-tests` | `pytest tests/e2e -m e2e` against dev URL; obtains a token via Cognito `USER_PASSWORD_AUTH` on a dedicated CI test user with restricted scopes | must pass |
 | `release` | `git-cliff` changelog, GitHub Release with artifact + SBOM | on `v*` tag |
@@ -599,12 +599,12 @@ flowchart TB
 
 ### 11.4 Contract tests (`tests/contract`)
 
-- Load the botocore service models for `sesv2` and `pinpoint-sms-voice-v2`; assert every property in each tool's JSON schema exists in the corresponding API input shape with a compatible type, and that all required API members are either required in the tool or server-injected. This keeps G5 true as the AWS API evolves.
+- Reflect over the AWS SDK for Go v2 input structs (`sesv2.SendEmailInput`, `pinpointsmsvoicev2.SendTextMessageInput`, …); assert every property in each tool's JSON schema exists in the corresponding input struct with a compatible type, and that all required API members are either required in the tool or server-injected. This keeps G5 true as the AWS API evolves.
 
 ### 11.5 Local development
 
-- `make dev` runs the server locally in STDIO and HTTP modes with `AWS_PROFILE`, so the tools can be tried from Claude Code before deploying.
-- `make test`, `make lint`, `make typecheck`, `make e2e`, `make deploy-dev`.
+- `make dev` runs the server locally over HTTP with the ambient AWS credentials, so the tools can be tried from Claude Code before deploying.
+- `make test`, `make lint`, `make vet`, `make build`, `make e2e`.
 
 ## 12. Documentation
 
@@ -709,30 +709,31 @@ Assumptions: single owner, ~5,000 MCP requests/month, ~300 emails, ~200 SMS, ~50
 aws-messaging-mcp/
 ├── .github/
 │   ├── workflows/
-│   │   ├── ci.yml              # quality, unit, security, iac, build
-│   │   ├── deploy-dev.yml      # on push to main
-│   │   ├── release.yml         # on v* tag -> approval -> prod
-│   │   └── docs.yml            # markdownlint, lychee, tool-doc drift
-│   ├── dependabot.yml
+│   │   ├── ci.yml              # quality, unit-tests, security-scans, iac-scans, commitlint
+│   │   ├── docs.yml            # markdownlint, lychee
+│   │   ├── deploy-dev.yml      # manual dispatch: build, change set, execute
+│   │   ├── release.yml         # on v* tag -> GitHub Release -> approval -> prod
+│   │   └── verify-oidc.yml
+│   ├── dependabot.yml          # gomod + github-actions
 │   └── CODEOWNERS
+├── cmd/
+│   ├── server/                 # Lambda bootstrap / local HTTP server
+│   └── ops/                    # rotate-secret, bootstrap-user
+├── internal/
+│   ├── settings/               # env -> Settings, SSM origin-secret resolver
+│   ├── auth/                   # origin, break-glass, JWT verifier, scopes (100 % covered)
+│   ├── httpapi/                # mux, middleware, OAuth metadata documents
+│   ├── mcpserver/              # MCP server + tools (hello; M2+: ses, sms, rcs, files)
+│   ├── lambdaadapter/          # Function URL event <-> http.Handler (buffered)
+│   ├── guardrails/             # M2+: allow-lists, rate limits, media checks
+│   ├── schemas/                # M2+: tool input types mirroring AWS shapes
+│   └── testkeys/               # test-only RSA/JWKS helper
 ├── infra/
-│   ├── bootstrap.yaml
-│   ├── edge.yaml
-│   ├── app.yaml
+│   ├── bootstrap.yaml, edge.yaml, root-dns.yaml, app.yaml
 │   └── params/{dev,prod}.json
-├── src/aws_messaging_mcp/
-│   ├── main.py                 # FastAPI app, FastMCP mount, well-known routes
-│   ├── auth/                   # jwt.py, origin.py, breakglass.py, scopes.py
-│   ├── guardrails/             # allowlist.py, ratelimit.py, media.py
-│   ├── tools/                  # ses.py, sms.py, rcs.py, files.py, readonly.py
-│   ├── tasks/                  # files_cleanup.py (scheduled handler)
-│   ├── schemas/                # pydantic models mirroring AWS shapes
-│   └── settings.py
-├── tests/{unit,integration,e2e,contract}/
-├── scripts/                    # setup-github.sh, bootstrap-user.sh, rotate-secret.py, rotate-signing-key.py, gen-tool-docs.py, update-my-ip.sh
+├── scripts/                    # setup-github.sh, update-my-ip.sh, check_coverage.sh, ...
 ├── docs/                       # see §12
-├── pyproject.toml
-├── uv.lock
+├── go.mod, go.sum, .golangci.yml
 ├── Makefile
 ├── CLAUDE.md
 └── README.md
@@ -793,6 +794,7 @@ claude.ai: edit the connector → request headers → `Authorization: Bearer <to
 | 2026-08-22 | Email sender: `@gabriel-esparza.com` in both stages, `mcp-dev@` vs `mcp@`; DKIM at GoDaddy, MAIL FROM subdomains in Route 53; dev stays in SES sandbox | No mail hosted on the domain, so SES can own SPF/DMARC; sandbox doubles as dev recipient restriction |
 | 2026-08-22 | Repository is **public**, not private; the AWS account ID and the owner's phone number are kept out of the repo and stored as GitHub **secrets** (masked in Actions logs — variables are not masked) | GitHub Free gates rulesets and environment protection rules (the prod approval gate, which is part of the AWS security boundary via OIDC `environment:prod` trust) to public repos; required reviewers on private repos need Enterprise. Public also enables secret scanning push protection and CodeQL at no cost |
 | 2026-08-23 | Prod distribution + web ACL subscribed to the CloudFront **Free** flat-rate plan via `pricing-plan-manager` (plan forbids restricted price classes, so `PriceClass` is unset; the plan requires the ACL to protect only the subscribed distribution, so dev has no ACL). The `mcp` hosted zone is attached to the plan; the root zone is not eligible (one zone per Free plan) and stays pay-as-you-go at $0.50/month | Owner decision G12; cost model §14 updated |
+| 2026-08-23 | **Runtime pivot to Go** (`provided.al2023`, arm64, static `bootstrap`, official MCP Go SDK, in-house buffered Function URL adapter). Python remains only as a CI tool runner. Contract tests move from botocore to AWS SDK for Go v2 struct reflection | Cold start measured at ~2,950 ms in Python (runtime + Web Adapter + imports) versus **217 ms** in Go on the same stack, at a traffic level where nearly every call is a cold start; SnapStart/provisioned concurrency would have cost more than the G4 budget. Done before M2 while the app was ~500 lines (`docs/plans/go-pivot.md`) |
 | 2026-08-23 | Edge access control moves from WAF rules to a **CloudFront Function** (viewer-request IP allow-list with the `/files/*` exemption; list in SSM, applied live by `update-my-ip.sh`); the WAF web ACL stays attached to prod only, empty, for flat-rate plan eligibility; distributions are IPv4-only | The Free plan's WAF supports only managed rules, rate limiting, and geo blocking - an IP-set allow-list or path match makes the ACL (and its distribution) ineligible, which surfaced at the first `CreateSubscription`. CloudFront Functions are included in the plan; PRD 4.2 had listed this as the alternative |
 | 2026-08-22 | M1 auth spike outcomes: R2 resolved in `direct` mode (fronted metadata kept as a flag), R3 resolved, R7 = IP allow-list + `update-my-ip.sh` + CI self-registration, R8 = Free plan on **prod** via `pricing-plan-manager`; refresh proven (hosted-bridge call succeeded 17.8 min after the 15-min access token was issued); TOTP enrolment observed at first login (the per-user MFA list stays empty on MFA-required pools — API quirk, not a gap) | Spike ran against the deployed dev stack from Claude Code, Claude Desktop, and a delayed hosted call |
 | 2026-08-22 | Hosted-bridge compatibility: the `claude-hosted` client registers both `claude.ai` and `claude.com` callbacks, and the server treats `/mcp` and `/mcp/` identically with redirects disabled (the bridge posts without a trailing slash and a Starlette redirect would have pointed it at the raw Function URL) | Observed in server logs during E3; both are now covered by tests |

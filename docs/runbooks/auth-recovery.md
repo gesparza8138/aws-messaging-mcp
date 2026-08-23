@@ -33,15 +33,15 @@ IP you last registered.
 ## 3. Break-glass (last resort)
 
 Grants `msg/read` only in dev (scopes are a stack parameter). Token shown once
-by `scripts/rotate-secret.py`; only its SHA-256 is stored.
+by `go run ./cmd/ops rotate-secret`; only its SHA-256 is stored.
 
 ```bash
 claude mcp add --transport http aws-messaging-dev-bg https://dev.mcp.gabriel-esparza.com/mcp/ \
   --header "Authorization: Bearer ${MSG_MCP_BREAK_GLASS}"
 ```
 
-Rotate it again (`rotate-secret.py --stage dev --break-glass-only`) once
-OAuth is back. Break-glass is off in prod by default (PRD S10); enabling it
+Rotate it again (`go run ./cmd/ops rotate-secret --stage dev --break-glass-only`)
+once OAuth is back. Break-glass is off in prod by default (PRD S10); enabling it
 is a parameter change and therefore an approved pipeline run.
 
 ## 4. Cognito user locked / MFA lost
