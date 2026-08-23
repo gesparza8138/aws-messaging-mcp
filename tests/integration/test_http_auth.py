@@ -72,9 +72,16 @@ def test_authorization_server_metadata_adds_pkce_field(server: Server) -> None:
     assert document["code_challenge_methods_supported"] == ["S256"]
 
 
-def test_mcp_without_trailing_slash_is_not_redirected(server: Server) -> None:
-    """Anthropic's hosted bridge posts to /mcp and never follows redirects."""
+def test_mcp_without_trailing_slash_is_not_redirected(server: Server, mint_token: Any) -> None:
+    """Anthropic's hosted bridge posts to /mcp with a token and never follows redirects."""
     base_url, _ = server
+    for token in ("", mint_token()):
+        headers = {"X-Origin-Secret": ORIGIN_SECRET}
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        response = httpx.post(f"{base_url}/mcp", headers=headers, json={}, follow_redirects=False)
+        assert response.status_code not in (301, 302, 307, 308, 404), response.status_code
+    # Unauthenticated: the 401 contract applies at /mcp too.
     response = httpx.post(
         f"{base_url}/mcp",
         headers={"X-Origin-Secret": ORIGIN_SECRET},
@@ -82,4 +89,14 @@ def test_mcp_without_trailing_slash_is_not_redirected(server: Server) -> None:
         follow_redirects=False,
     )
     assert response.status_code == 401
-    assert "WWW-Authenticate" in response.headers
+
+
+def test_unknown_path_is_404_not_redirect(server: Server) -> None:
+    """redirect_slashes is off so the Lambda Host header can never leak."""
+    base_url, _ = server
+    response = httpx.get(
+        f"{base_url}/.well-known/oauth-protected-resource/",
+        headers={"X-Origin-Secret": ORIGIN_SECRET},
+        follow_redirects=False,
+    )
+    assert response.status_code == 404

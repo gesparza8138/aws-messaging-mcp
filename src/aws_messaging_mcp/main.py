@@ -109,6 +109,9 @@ def create_app(settings: Settings, key_resolver: KeyResolver | None = None) -> F
         docs_url=None,
         redoc_url=None,
         openapi_url=None,
+        # Never redirect: the Host header at the Lambda is the raw Function
+        # URL, so any Starlette redirect would leak it to the client.
+        redirect_slashes=False,
     )
 
     @app.middleware("http")
@@ -174,26 +177,30 @@ def create_app(settings: Settings, key_resolver: KeyResolver | None = None) -> F
         """
         return _authorization_server_doc(settings)
 
-    app.mount("/mcp", _NormalizeMcpPath(mcp_app))
+    app.mount("/mcp", mcp_app)
+    # Outermost: runs before auth and routing, so ``/mcp`` and ``/mcp/`` are
+    # indistinguishable everywhere downstream.
+    app.add_middleware(_McpPathNormalizer)
     return app
 
 
-class _NormalizeMcpPath:
+class _McpPathNormalizer:
     """Serve ``/mcp`` and ``/mcp/`` identically.
 
-    Anthropic's hosted bridge posts to ``/mcp`` without a trailing slash and
-    does not follow redirects, so the Mount's 307 must never fire.
+    Anthropic's hosted bridge posts to ``/mcp`` without a trailing slash;
+    Starlette's Mount only matches ``/mcp/``, and a redirect would point at
+    the Lambda's own Host (the raw Function URL), bypassing CloudFront.
     """
 
     def __init__(self, app: ASGIApp) -> None:
         self._app = app
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        """Rewrite an empty mount-relative path to ``/`` before dispatch."""
-        if scope["type"] == "http" and scope.get("path") == "":
+        """Rewrite ``/mcp`` to ``/mcp/`` before anything else sees it."""
+        if scope["type"] == "http" and scope.get("path") == "/mcp":
             scope = dict(scope)
-            scope["path"] = "/"
-            scope["raw_path"] = scope.get("raw_path", b"") + b"/"
+            scope["path"] = "/mcp/"
+            scope["raw_path"] = b"/mcp/"
         await self._app(scope, receive, send)
 
 
