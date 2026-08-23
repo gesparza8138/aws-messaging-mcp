@@ -28,8 +28,8 @@ iac-lint:
 	fi
 
 e2e:
-	@echo "E2E tests arrive with M2 and need a deployed dev stack."
-	@exit 1
+	@test -n "$$E2E_BASE_URL" || { echo "set the E2E_* environment first (docs/testing.md)"; exit 1; }
+	go test -tags e2e -count=1 -v ./e2e/
 
 deploy-dev:
 	@echo "Deploy dev with: gh workflow run deploy-dev.yml (preview) then -f execute=true"

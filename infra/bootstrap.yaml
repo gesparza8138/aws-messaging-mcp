@@ -270,6 +270,12 @@ Resources:
                   - ssm:PutParameter
                 Resource:
                   - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/messaging-mcp/edge/allowed-cidrs
+              - Sid: ReadSesEventTrail
+                # The e2e job confirms a real send produced a Delivery event.
+                Effect: Allow
+                Action: logs:FilterLogEvents
+                Resource:
+                  - !Sub arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws-messaging-mcp/dev/ses-events:*
               - Sid: RepublishDevAllowListFunction
                 Effect: Allow
                 Action:

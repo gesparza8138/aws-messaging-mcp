@@ -333,8 +333,12 @@ Resources:
                 Action:
                   - ses:SendEmail
                   - ses:SendRawEmail
+                # identity/* rather than the sending domain alone: SES also
+                # authorizes SendEmail against the recipient's identity ARN for
+                # sandbox sends to verified addresses. The FromAddress condition
+                # is what actually pins who the server may send as.
                 Resource:
-                  - "{{resolve:ssm:/messaging-mcp/ses/identity-arn}}"
+                  - !Sub arn:${AWS::Partition}:ses:${AWS::Region}:${AWS::AccountId}:identity/*
                   - !Sub arn:${AWS::Partition}:ses:${AWS::Region}:${AWS::AccountId}:configuration-set/${SesConfigurationSet}
                 Condition:
                   StringEquals:
