@@ -295,6 +295,19 @@ Resources:
       Principal: "*"
       FunctionUrlAuthType: NONE
 
+  McpFunctionInvokePermission:
+    Type: AWS::Lambda::Permission
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: F13
+            reason: Function URLs created after October 2025 require lambda:InvokeFunction alongside lambda:InvokeFunctionUrl for AuthType NONE; same origin-secret justification as McpFunctionUrlPermission.
+    Properties:
+      FunctionName: !Ref McpFunction
+      Action: lambda:InvokeFunction
+      Principal: "*"
+      FunctionUrlAuthType: NONE
+
   Distribution:
     Type: AWS::CloudFront::Distribution
     Metadata:
