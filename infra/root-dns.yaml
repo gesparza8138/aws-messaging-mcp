@@ -1,0 +1,86 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  Route 53 hosted zone for the root domain gabriel-esparza.com. DNS hosting
+  for the whole domain moves here from GoDaddy (registration stays at
+  GoDaddy; only the nameservers change). Carries the pre-existing site and
+  mail records verbatim and delegates mcp.<domain> to the project zone the
+  edge stack owns. Deployed once, manually, like the edge stack.
+
+Parameters:
+  DomainName:
+    Type: String
+    Default: gabriel-esparza.com
+    Description: Root domain name.
+  McpZoneNameServers:
+    Type: CommaDelimitedList
+    Description: >-
+      The four name servers of the existing mcp.<domain> hosted zone
+      (edge-stack output NameServers). Passed at deploy time so recreating
+      the child zone never requires a template change.
+  SiteIpAddress:
+    Type: String
+    Default: 34.216.94.185
+    Description: >-
+      Pre-existing A record target for the apex and www (carried over from
+      GoDaddy so the move changes nothing). Delete the record when unwanted.
+
+Resources:
+  RootZone:
+    Type: AWS::Route53::HostedZone
+    # The domain's nameservers at the GoDaddy registrar point at this zone;
+    # a stack failure must never destroy it.
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      Name: !Ref DomainName
+      HostedZoneConfig:
+        Comment: Whole-domain DNS hosting, moved from GoDaddy 2026-08. Registration remains at GoDaddy.
+
+  McpDelegation:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !Ref RootZone
+      Name: !Sub mcp.${DomainName}
+      Type: NS
+      TTL: "3600"
+      ResourceRecords: !Ref McpZoneNameServers
+
+  ApexA:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !Ref RootZone
+      Name: !Ref DomainName
+      Type: A
+      TTL: "3600"
+      ResourceRecords:
+        - !Ref SiteIpAddress
+
+  WwwCname:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !Ref RootZone
+      Name: !Sub www.${DomainName}
+      Type: CNAME
+      TTL: "3600"
+      ResourceRecords:
+        - !Ref DomainName
+
+  # GoDaddy Workspace Email MX records, carried over verbatim.
+  Mx:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !Ref RootZone
+      Name: !Ref DomainName
+      Type: MX
+      TTL: "3600"
+      ResourceRecords:
+        - 0 smtp.secureserver.net.
+        - 10 mailstore1.secureserver.net.
+
+Outputs:
+  RootZoneId:
+    Description: Hosted zone id for the root domain.
+    Value: !Ref RootZone
+  RootNameServers:
+    Description: Set these four values as the domain's nameservers at the GoDaddy registrar.
+    Value: !Join [", ", !GetAtt RootZone.NameServers]
