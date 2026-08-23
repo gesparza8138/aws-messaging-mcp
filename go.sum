@@ -30,6 +30,8 @@ github.com/aws/aws-sdk-go-v2/service/internal/endpoint-discovery v1.12.15 h1:I8t
 github.com/aws/aws-sdk-go-v2/service/internal/endpoint-discovery v1.12.15/go.mod h1:cIYnGuVFa0DBY0Mq4/VPPcD9GdvYHBdMwHK3HE5RDRc=
 github.com/aws/aws-sdk-go-v2/service/internal/presigned-url v1.13.38 h1:H/5TI1jqaHsNoDQ60UwvPvJBg4GURkinXI3Qga29t2w=
 github.com/aws/aws-sdk-go-v2/service/internal/presigned-url v1.13.38/go.mod h1:PTVFf+XH++7NJOky+RLBYQx0QA5NcaeEYFQ2fsi0nwo=
+github.com/aws/aws-sdk-go-v2/service/pinpointsmsvoicev2 v1.33.2 h1:LmcbfCOg97dwoSd5Rk6hgKnZJocI+F1uuymf5G4aczY=
+github.com/aws/aws-sdk-go-v2/service/pinpointsmsvoicev2 v1.33.2/go.mod h1:lUQznp51NXfmxWX/wp4/9wo17TeDEm1yM20tFNm4FpQ=
 github.com/aws/aws-sdk-go-v2/service/sesv2 v1.67.0 h1:cvmzhKyIYHkR+ULgWBYK672NzybWJiANO31uOsv0Imo=
 github.com/aws/aws-sdk-go-v2/service/sesv2 v1.67.0/go.mod h1:zHA87gWVfSnNYawE3e4ghWT3nxJOGSd1Ml0r+Epx/8o=
 github.com/aws/aws-sdk-go-v2/service/signin v1.5.7 h1:YcczQ6zNH/ojIzD/ikDrO+RfW06wmdMp18d4NH5hXY4=
