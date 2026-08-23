@@ -1,0 +1,108 @@
+name: release
+
+# Prod path (PRD 10): a signed v* tag builds the artifact, publishes a GitHub
+# Release with it attached, then waits on the `prod` environment's required
+# reviewer before deploying. Prod is never deployed from a workstation.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      key: ${{ steps.build.outputs.key }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6
+        with:
+          enable-cache: true
+      - name: build artifact (arm64 zip with Lambda Web Adapter entrypoint)
+        id: build
+        run: |
+          uv export --no-dev --no-emit-project --format requirements-txt --no-hashes -o requirements.txt
+          pip install --quiet --platform manylinux2014_aarch64 --implementation cp \
+            --python-version 3.13 --only-binary=:all: --target build -r requirements.txt
+          cp -r src/aws_messaging_mcp build/
+          install -m 755 scripts/lambda-run.sh build/run.sh
+          (cd build && zip -qr ../app.zip .)
+          echo "key=app-$(sha256sum app.zip | cut -c1-16).zip" >> "$GITHUB_OUTPUT"
+      - name: publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp app.zip "${{ steps.build.outputs.key }}"
+          gh release create "${{ github.ref_name }}" "${{ steps.build.outputs.key }}" \
+            --title "${{ github.ref_name }}" --generate-notes
+
+  deploy-prod:
+    name: deploy-prod
+    needs: release
+    runs-on: ubuntu-latest
+    environment: prod
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - name: fetch the released artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release download "${{ github.ref_name }}" --pattern "${{ needs.release.outputs.key }}"
+      - uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          role-session-name: release-${{ github.run_id }}
+          mask-aws-account-id: true
+      - name: upload artifact
+        run: aws s3 cp "${{ needs.release.outputs.key }}" "s3://${{ secrets.ARTIFACT_BUCKET }}/${{ needs.release.outputs.key }}"
+      - name: fetch stage secrets from SSM
+        id: secrets
+        run: |
+          OS=$(aws ssm get-parameter --name /messaging-mcp/prod/origin-secret --with-decryption --query Parameter.Value --output text)
+          echo "::add-mask::$OS"
+          echo "origin_secret=$OS" >> "$GITHUB_OUTPUT"
+          BG=$(aws ssm get-parameter --name /messaging-mcp/prod/break-glass-sha256 --query Parameter.Value --output text)
+          echo "::add-mask::$BG"
+          echo "break_glass_sha256=$BG" >> "$GITHUB_OUTPUT"
+      - name: deploy
+        run: |
+          PARAMS=$(jq -r 'join(" ")' infra/params/prod.json)
+          # shellcheck disable=SC2086
+          aws cloudformation deploy \
+            --stack-name aws-messaging-mcp-prod \
+            --template-file infra/app.yaml \
+            --role-arn "arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/aws-messaging-mcp-cfn-service" \
+            --capabilities CAPABILITY_NAMED_IAM \
+            --no-fail-on-empty-changeset \
+            --parameter-overrides $PARAMS \
+              "CodeKey=${{ needs.release.outputs.key }}" \
+              "OriginSecret=${{ steps.secrets.outputs.origin_secret }}" \
+              "BreakGlassSha256=${{ steps.secrets.outputs.break_glass_sha256 }}"
+          aws cloudformation describe-stacks --stack-name aws-messaging-mcp-prod \
+            --query 'Stacks[0].Outputs' --output table >> "$GITHUB_STEP_SUMMARY"
+      - name: smoke test (unauthenticated contracts only)
+        run: |
+          URL=$(aws cloudformation describe-stacks --stack-name aws-messaging-mcp-prod \
+            --query 'Stacks[0].Outputs[?OutputKey==`McpUrl`].OutputValue' --output text)
+          BASE=${URL%/mcp/}
+          for i in $(seq 1 20); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' "$BASE/healthz") && [ "$code" = "200" ] && break
+            sleep 15
+          done
+          [ "$code" = "200" ] || { echo "healthz returned $code"; exit 1; }
+          curl -sf "$BASE/.well-known/oauth-protected-resource" | jq -e '.resource == "'"$URL"'"' >/dev/null
+          code=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$URL" -H 'content-type: application/json' -d '{}')
+          [ "$code" = "401" ] || { echo "expected 401 without token, got $code"; exit 1; }
+          echo "smoke OK: $URL"
