@@ -100,7 +100,8 @@ Carriers typically review in 1–2 weeks. Until approved, expect heavy filtering
 
 ### 2.3 Spend and protect settings
 
-- Account-level SMS spend limit: set to **$20/month** (Console → Account settings, or `aws pinpoint-sms-voice-v2 set-text-message-spend-limit-override --monthly-limit 20`).
+- **SMS sandbox (M3-6):** the EUM account starts in tier `SANDBOX` — sends reach only *verified destination numbers* and every spend limit is capped at $1/month. Verify your own handset for e2e (`aws pinpoint-sms-voice-v2 create-verified-destination-number --destination-phone-number +1XXXXXXXXXX`, then `send-destination-number-verification-code` and `verify-destination-number` with the texted code). Request production access (Console → AWS End User Messaging SMS → Account → *Request production access*) **after** the toll-free verification completes.
+- Account-level SMS spend limit: once production access raises the ceiling, set it to **$20/month** (`aws pinpoint-sms-voice-v2 set-text-message-spend-limit-override --monthly-limit 20`); in the sandbox the $1 cap already applies.
 - Create a **protect configuration** that allows only `US` and attach it to the configuration set; the stack parameter `ProtectConfigurationId` carries it.
 
 ## 3. RCS — descoped

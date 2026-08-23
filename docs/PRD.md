@@ -191,7 +191,7 @@ flowchart LR
 | `sms_send_text_message` | `sms-voice:SendTextMessage` | `msg/sms:send` | SMS |
 | `sms_send_media_message` | `sms-voice:SendMediaMessage` | `msg/sms:send` | MMS with images |
 | `sms_describe_phone_numbers` | `sms-voice:DescribePhoneNumbers` | `msg/read` | Discover origination numbers |
-| `sms_get_message_status` | `sms-voice:GetMessage`/event lookup *(v2 only)* | `msg/read` | Delivery status for a `MessageId` |
+| `sms_get_message_status` | event-trail lookup (`logs:FilterLogEvents` on the stage's EUM event group; the API has no per-message read - M3-3) | `msg/read` | Delivery status for a `MessageId` |
 | `files_put_object` | `s3:PutObject` + CloudFront URL signing | `msg/files:write` | Upload inline content, get a signed download URL |
 | `files_create_upload_url` | `s3:PutObject` presigned (`aws s3 presign`-style) | `msg/files:write` | Get a short-lived `PUT` URL for large files, then sign for download |
 | `files_create_signed_url` | CloudFront URL signing (`aws cloudfront sign`) | `msg/files:write` | (Re)issue a download URL for an existing key with a new expiry |
@@ -459,7 +459,8 @@ Pure CloudFormation (YAML), no SAM transform, no CDK. Deployed with `aws cloudfo
 | `FilesCleanupSchedule` | `AWS::Scheduler::Schedule` | Daily, invokes `McpFunction` with `{"task":"files-cleanup"}` to delete objects past `expires-at` |
 | *(SSM secrets)* | — | `/messaging-mcp/<stage>/origin-secret` (SecureString) and `/messaging-mcp/<stage>/break-glass-sha256` are created and rotated out-of-band by `cmd/ops rotate-secret`, not by the template; the deploy workflows pass them as NoEcho parameters |
 | `SesConfigurationSet` + `EventDestination` | `AWS::SES::ConfigurationSet*` | Delivery/bounce/complaint events → CloudWatch Logs |
-| `EumConfigurationSet` + `EventDestination` | `AWS::PinpointSMSVoiceV2::*` *(if CFN coverage allows; otherwise custom resource or documented manual step)* | Delivery events → CloudWatch Logs |
+| `EumConfigurationSet` + `EventDestination` | `AWS::SMSVOICE::ConfigurationSet` (inline CloudWatch Logs destination + assumed role; CFN-native since M3 - see M3-1) | All text/media events → CloudWatch Logs |
+| `MediaBucket` | `AWS::S3::Bucket` | MMS media staging: private, never behind CloudFront, 7-day lifecycle, EUM read via SourceAccount-conditioned policy |
 | `LogGroup` | `AWS::Logs::LogGroup` | 14-day retention (dev), 90-day (prod) |
 | `Alarms` | `AWS::CloudWatch::Alarm` ×3 | Lambda errors, throttles, 4xx rate from CloudFront |
 | `Budget` | `AWS::Budgets::Budget` | Monthly cost alarm on SES + EUM, SNS email notification |
@@ -646,7 +647,7 @@ Assumptions: single owner, ~5,000 MCP requests/month, ~300 emails, ~200 SMS, ~50
 | R2 | ~~Cognito discovery metadata omits `code_challenge_methods_supported`; a strict client may refuse PKCE~~ **Resolved 2026-08-22:** both Claude Code and the hosted bridge completed PKCE S256 against Cognito directly (`AuthMetadataMode=direct`); the fronted RFC 8414 document stays available as a feature flag | — | — | Flip `AuthMetadataMode=fronted` per stage if a future client regresses |
 | R3 | ~~CloudFront buffering interferes with Streamable HTTP~~ **Resolved 2026-08-22:** stateless JSON responses through WAF + CloudFront + Function URL (BUFFERED) + Lambda Web Adapter verified with the `mcp` client, Claude Code, and the hosted bridge | — | — | Keep `json_response=True`, `stateless_http=True` |
 | R4 | ~~`SendRcsMessage` API shape~~ Moot 2026-08-23: RCS descoped | — | — | — |
-| R5 | CloudFormation coverage for EUM v2 event destinations / RCS resources incomplete | Medium | Manual steps | Document as prerequisites; custom resource if needed |
+| R5 | ~~CloudFormation coverage for EUM v2 incomplete~~ **Resolved 2026-08-24:** every needed resource is CFN-native (`AWS::SMSVOICE::PhoneNumber/ConfigurationSet/ProtectConfiguration`); even the toll-free number is stack-managed (`infra/eum.yaml`, Retain + deletion protection). Only the carrier verification form remains manual | — | — | — |
 | R6 | ~~RCS country launch registration delays~~ Moot 2026-08-23: RCS descoped | — | — | — |
 | R7 | ~~Claude Code home IP changes break WAF allow-list~~ **Resolved 2026-08-22:** keep the default-deny IP allow-list; `scripts/update-my-ip.sh` refreshes the owner entry; CI e2e runners self-register their egress IP for the run (dev deploy role holds scoped `wafv2:UpdateIPSet`, implemented with the e2e harness in M2) | — | — | Revisit token-only access only if the IP churn becomes a nuisance |
 | R8 | ~~CloudFront Free plan vs CloudFormation~~ **Resolved 2026-08-22:** CloudFormation has no plan support; enrolment is scripted via the `pricing-plan-manager` API (`scripts/enroll-pricing-plan.sh`). The Free plan covers one distribution — **prod** gets it (owner decision); dev stays pay-as-you-go and its WAF share is observed on the bill for M5 | — | — | Re-run the script if the prod distribution is ever recreated |
@@ -745,6 +746,8 @@ claude.ai: edit the connector → request headers → `Authorization: Bearer <to
 
 | Date | Decision | Rationale |
 | --- | --- | --- |
+| 2026-08-24 | **M3 build outcomes:** all EUM resources CFN-native incl. the stack-managed toll-free number (`infra/eum.yaml`, Retain); tool `DryRun` keeps the server-side M2 semantics while the API's own `DryRun` stays server-controlled; `sms_get_message_status` is an event-trail lookup; `/` and `/opt-in` are public edge-exempt pages for carrier verification; the owner's test phone reaches the dev recipient allow-list only at deploy time from the `E2E_TEST_PHONE` secret | Findings M3-1..M3-5 (`docs/plans/m3.md` §1); public-repo hygiene keeps numbers out of the repo (SSM `/messaging-mcp/eum/*`) |
+| 2026-08-24 | **EUM SMS sandbox** (account tier SANDBOX, $1/month spend caps): real sends reach only verified destination numbers until production access is requested; e2e maps the sandbox refusal to a skip. Production access will be requested after the toll-free carrier verification completes | Found during M3: EUM has a per-account sandbox like SES (M3-6). The $20 spend-limit override in prerequisites §2.3 only applies once production access raises `MaxLimit` (currently $1) |
 | 2026-08-23 | E2E authenticates with the Cognito **`client_credentials`** grant on the dev-only `ci` client; no CI user, no GitHub secret (client id/secret in SSM, read by the dev deploy role). Tool reference pages are generated by `cmd/gendocs` from the live tool registry with a CI drift check | The planned `USER_PASSWORD_AUTH` design cannot work: `InitiateAuth` access tokens never carry resource-server scopes, and pool-wide TOTP blocks a non-interactive user. Cognito has billed M2M per successful token request (no flat per-client fee) since 2025-11, so the grant fits the S1 budget |
 | 2026-08-23 | Lambda's `ses:SendEmail` grant is `identity/*` + the `ses:FromAddress` condition, not the sending-domain identity ARN | Found by the first live e2e run: SES authorizes sandbox sends against the **recipient's** identity ARN too, so the domain-scoped grant denied sends to the verified test mailbox; the FromAddress condition is what actually pins the sender |
 | 2026-08-22 | Drop SNS; use End User Messaging for all texting | SNS has no MMS/RCS; EUM covers SMS, MMS, RCS with fallback |
