@@ -217,6 +217,6 @@ def _authorization_server_doc(settings: Settings) -> dict[str, object]:
     }
 
 
-def dev_app() -> FastAPI:
-    """Application factory for ``make dev`` (uvicorn ``--factory``)."""
+def app_from_env() -> FastAPI:
+    """Application factory for uvicorn ``--factory`` (Lambda and ``make dev``)."""
     return create_app(resolve_origin_secret(Settings.from_env()))

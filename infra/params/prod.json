@@ -1,0 +1,6 @@
+[
+  "Stage=prod",
+  "CognitoDomainPrefix=aws-messaging-mcp-prod",
+  "AuthMetadataMode=direct",
+  "BreakGlassEnabled=false"
+]

@@ -1,7 +1,7 @@
 .PHONY: dev test lint typecheck iac-lint e2e deploy-dev
 
 dev:
-	uv run uvicorn aws_messaging_mcp.main:dev_app --factory --port 8000 --reload
+	uv run uvicorn aws_messaging_mcp.main:app_from_env --factory --port 8000 --reload
 
 test:
 	uv run pytest tests/unit tests/integration --cov --cov-report=term-missing --cov-report=json

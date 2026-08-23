@@ -1,0 +1,6 @@
+[
+  "Stage=dev",
+  "CognitoDomainPrefix=aws-messaging-mcp-dev",
+  "AuthMetadataMode=direct",
+  "BreakGlassEnabled=true"
+]

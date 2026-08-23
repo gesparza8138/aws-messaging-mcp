@@ -1,0 +1,103 @@
+name: deploy-dev
+
+# Manual-dispatch only during M0/M1 so every dev deploy is a deliberate,
+# reviewed action (see PRD Appendix C). Flipping the trigger to push-on-main
+# is a one-line change planned for M2. Run once with execute=false to build
+# the artifact and print the change-set summary; run with execute=true to
+# apply it.
+on:
+  workflow_dispatch:
+    inputs:
+      execute:
+        description: Execute the change set (false = create and summarize only)
+        type: boolean
+        default: false
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: deploy-dev
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: deploy-dev
+    runs-on: ubuntu-latest
+    environment: dev
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6
+        with:
+          enable-cache: true
+
+      - name: build artifact (arm64 zip with Lambda Web Adapter entrypoint)
+        id: build
+        run: |
+          uv export --no-dev --no-emit-project --format requirements-txt --no-hashes -o requirements.txt
+          pip install --quiet --platform manylinux2014_aarch64 --implementation cp \
+            --python-version 3.13 --only-binary=:all: --target build -r requirements.txt
+          cp -r src/aws_messaging_mcp build/
+          install -m 755 scripts/lambda-run.sh build/run.sh
+          (cd build && zip -qr ../app.zip .)
+          echo "key=app-$(sha256sum app.zip | cut -c1-16).zip" >> "$GITHUB_OUTPUT"
+
+      - uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          role-session-name: deploy-dev-${{ github.run_id }}
+          mask-aws-account-id: true
+
+      - name: upload artifact
+        run: aws s3 cp app.zip "s3://${{ secrets.ARTIFACT_BUCKET }}/${{ steps.build.outputs.key }}"
+
+      - name: fetch stage secrets from SSM
+        id: secrets
+        run: |
+          OS=$(aws ssm get-parameter --name /messaging-mcp/dev/origin-secret --with-decryption --query Parameter.Value --output text)
+          echo "::add-mask::$OS"
+          echo "origin_secret=$OS" >> "$GITHUB_OUTPUT"
+          BG=$(aws ssm get-parameter --name /messaging-mcp/dev/break-glass-sha256 --query Parameter.Value --output text)
+          echo "::add-mask::$BG"
+          echo "break_glass_sha256=$BG" >> "$GITHUB_OUTPUT"
+
+      - name: create change set
+        id: changeset
+        run: |
+          PARAMS=$(jq -r 'join(" ")' infra/params/dev.json)
+          # shellcheck disable=SC2086
+          aws cloudformation deploy \
+            --stack-name aws-messaging-mcp-dev \
+            --template-file infra/app.yaml \
+            --role-arn "arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/aws-messaging-mcp-cfn-service" \
+            --no-execute-changeset \
+            --parameter-overrides $PARAMS \
+              "CodeKey=${{ steps.build.outputs.key }}" \
+              "OriginSecret=${{ steps.secrets.outputs.origin_secret }}" \
+              "BreakGlassSha256=${{ steps.secrets.outputs.break_glass_sha256 }}"
+          ARN=$(aws cloudformation list-change-sets --stack-name aws-messaging-mcp-dev \
+            --query 'Summaries | sort_by(@, &CreationTime) | [-1].ChangeSetId' --output text)
+          echo "arn=$ARN" >> "$GITHUB_OUTPUT"
+          {
+            echo "## Change set for aws-messaging-mcp-dev"
+            echo '```'
+            aws cloudformation describe-change-set --change-set-name "$ARN" \
+              --query 'Changes[].{Action:ResourceChange.Action,LogicalId:ResourceChange.LogicalResourceId,Type:ResourceChange.ResourceType,Replacement:ResourceChange.Replacement}' \
+              --output table
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: execute change set
+        if: inputs.execute
+        run: |
+          aws cloudformation execute-change-set --change-set-name "${{ steps.changeset.outputs.arn }}"
+          aws cloudformation wait stack-update-complete --stack-name aws-messaging-mcp-dev 2>/dev/null \
+            || aws cloudformation wait stack-create-complete --stack-name aws-messaging-mcp-dev
+          aws cloudformation describe-stacks --stack-name aws-messaging-mcp-dev \
+            --query 'Stacks[0].Outputs' --output table >> "$GITHUB_STEP_SUMMARY"
+
+      - name: discard unexecuted change set
+        if: ${{ !inputs.execute }}
+        run: echo "Change set left pending; re-run with execute=true to apply, or delete it in the console." >> "$GITHUB_STEP_SUMMARY"
