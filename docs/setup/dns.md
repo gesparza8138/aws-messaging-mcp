@@ -1,6 +1,15 @@
-# DNS setup: delegating `mcp.gabriel-esparza.com` from GoDaddy to Route 53
+# DNS setup: `gabriel-esparza.com` on Route 53
 
-The domain `gabriel-esparza.com` is registered and DNS-hosted at GoDaddy. Rather than moving the whole domain, we **delegate one subdomain** to a Route 53 hosted zone. Everything under `mcp.gabriel-esparza.com` is then managed by CloudFormation; everything else at GoDaddy is untouched.
+> [!IMPORTANT]
+> **Superseded 2026-08-22 (see PRD Appendix C):** DNS hosting for the *whole*
+> domain moved to Route 53 (`infra/root-dns.yaml`); only the registration
+> stays at GoDaddy. The original subdomain-delegation model below survives
+> unchanged as a *child zone*: `mcp.gabriel-esparza.com` still has its own
+> hosted zone owned by the edge stack, but its NS delegation records now live
+> in the Route 53 root zone instead of GoDaddy. The single remaining GoDaddy
+> action, ever, is pointing the domain's nameservers at the root zone.
+
+The domain `gabriel-esparza.com` is registered at GoDaddy. Everything under `mcp.gabriel-esparza.com` is managed by CloudFormation via the edge stack's child zone; the root zone (`infra/root-dns.yaml`) carries the pre-existing site/mail records and the `mcp` delegation.
 
 | Name | Purpose | Stage |
 | --- | --- | --- |
@@ -22,29 +31,25 @@ aws route53 get-hosted-zone --id <ZoneId> --query 'DelegationSet.NameServers'
 
 You will get four names like `ns-123.awsdns-45.com`, `ns-678.awsdns-90.net`, `ns-1011.awsdns-12.org`, `ns-1314.awsdns-15.co.uk`.
 
-## 2. Add the NS records at GoDaddy
+## 2. Point the domain's nameservers at Route 53
 
-GoDaddy → My Products → `gabriel-esparza.com` → **DNS** → *Add new record*, four times:
+Deploy `infra/root-dns.yaml` (once, manually — pass the mcp zone's four name
+servers as `McpZoneNameServers`), then take the stack's `RootNameServers`
+output and set them at the registrar:
 
-| Type | Name | Value | TTL |
-| --- | --- | --- | --- |
-| NS | `mcp` | `ns-123.awsdns-45.com` | 1 hour |
-| NS | `mcp` | `ns-678.awsdns-90.net` | 1 hour |
-| NS | `mcp` | `ns-1011.awsdns-12.org` | 1 hour |
-| NS | `mcp` | `ns-1314.awsdns-15.co.uk` | 1 hour |
+GoDaddy → My Products → `gabriel-esparza.com` → **Nameservers** → *Change* →
+*Enter my own nameservers* → paste the four `awsdns` values.
 
-Notes:
+The root zone already carries the domain's pre-existing records (site `A`,
+`www`, GoDaddy-mail `MX`) plus the `mcp` NS delegation, so nothing visibly
+changes except who serves the DNS.
 
-- Enter the **host as `mcp`**, not the full name; GoDaddy appends the domain.
-- Do **not** put a trailing dot on the values in GoDaddy's UI.
-- Do not change the domain's own nameservers (the "Nameservers" section) — that would move the whole domain to Route 53.
-- No other records under `mcp` should exist at GoDaddy; if an `A` or `CNAME` for `mcp` exists, delete it first.
-
-Verify after a few minutes:
+Verify after propagation (registrar changes can take up to an hour):
 
 ```bash
-dig +short NS mcp.gabriel-esparza.com            # should list the four awsdns servers
-dig +short NS mcp.gabriel-esparza.com @8.8.8.8
+dig +short NS gabriel-esparza.com @8.8.8.8       # the four root-zone awsdns servers
+dig +short NS mcp.gabriel-esparza.com @8.8.8.8   # the four child-zone awsdns servers
+dig +short A gabriel-esparza.com @8.8.8.8        # unchanged site IP
 ```
 
 ## 3. Certificates
@@ -66,8 +71,8 @@ SES needs DKIM records for whatever domain appears in `From:`.
 
 | Option | `From:` looks like | Where DKIM CNAMEs go | Notes |
 | --- | --- | --- | --- |
-| **A. Root domain** | `gabe@gabriel-esparza.com` | GoDaddy (3 CNAMEs under `<selector>._domainkey`) plus a `_dmarc` TXT | Nicest sender address; must not conflict with existing email provider's SPF — SES adds its own `include:amazonses.com` if you use a custom MAIL FROM |
-| **B. Delegated subdomain** | `gabe@mcp.gabriel-esparza.com` | Route 53, fully automated by CloudFormation (`AWS::SES::EmailIdentity` + `DkimAttributes` + `Route53` records) | Zero GoDaddy changes; address is less pretty |
+| **A. Root domain** | `gabe@gabriel-esparza.com` | Route 53 **root zone** (3 CNAMEs under `<selector>._domainkey`) plus a `_dmarc` TXT — automatable in CloudFormation since the whole domain moved to Route 53 | Nicest sender address. **Open question for M2:** the root zone carries GoDaddy-mail MX records; confirm whether that mailbox is used before adding a strict SPF/DMARC policy |
+| **B. Delegated subdomain** | `gabe@mcp.gabriel-esparza.com` | Route 53 child zone, fully automated by CloudFormation (`AWS::SES::EmailIdentity` + `DkimAttributes` + `Route53` records) | Fully automated; address is less pretty |
 | **C. Verified address only** | `esparza.gabriel@gmail.com` | none | Works in SES sandbox for testing but Gmail's DMARC policy causes rejection/spoof warnings in production; not recommended |
 
 Recommendation: **B for `dev`** (fully automated, no risk to your real mail) and **A for `prod`** once you add the three DKIM CNAMEs at GoDaddy. The PRD's sender allow-list is a stack parameter, so this is configuration, not code.
@@ -83,4 +88,6 @@ These all derive from the hostnames above and are set as stack parameters:
 
 ## 7. Rollback
 
-Deleting the four NS records at GoDaddy detaches the subdomain; nothing else on the domain is affected.
+Switch the domain's nameservers back to GoDaddy's defaults (GoDaddy keeps its
+copy of the old zone); the Route 53 zones keep existing and can be re-pointed
+at any time.

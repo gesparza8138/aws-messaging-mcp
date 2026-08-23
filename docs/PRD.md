@@ -10,7 +10,7 @@ A serverless MCP server on AWS Lambda that lets Claude Code and Claude Desktop s
 | Last updated | 2026-08-22 |
 | AWS account | Single account — ID kept out of the repo (GitHub secret `AWS_ACCOUNT_ID`); dev and prod stacks side by side |
 | Target region | `us-west-2` (single region; ACM + WAF for CloudFront in `us-east-1`) |
-| Hostnames | `mcp.gabriel-esparza.com` (prod), `dev.mcp.gabriel-esparza.com` (dev) — subdomain delegated from GoDaddy to Route 53, see [`docs/setup/dns.md`](setup/dns.md) |
+| Hostnames | `mcp.gabriel-esparza.com` (prod), `dev.mcp.gabriel-esparza.com` (dev) — whole-domain DNS on Route 53 (registration at GoDaddy), see [`docs/setup/dns.md`](setup/dns.md) |
 | Runtime | Python 3.13 on AWS Lambda (arm64) |
 
 ---
@@ -792,3 +792,4 @@ claude.ai: edit the connector → request headers → `Authorization: Bearer <to
 | 2026-08-22 | Single AWS account for both stages; delegate `mcp.gabriel-esparza.com` from GoDaddy to Route 53 rather than moving the domain | Keeps existing GoDaddy DNS/email untouched; Route 53 zone lets CloudFormation manage certs and records |
 | 2026-08-22 | Email sender: `@gabriel-esparza.com` in both stages, `mcp-dev@` vs `mcp@`; DKIM at GoDaddy, MAIL FROM subdomains in Route 53; dev stays in SES sandbox | No mail hosted on the domain, so SES can own SPF/DMARC; sandbox doubles as dev recipient restriction |
 | 2026-08-22 | Repository is **public**, not private; the AWS account ID and the owner's phone number are kept out of the repo and stored as GitHub **secrets** (masked in Actions logs — variables are not masked) | GitHub Free gates rulesets and environment protection rules (the prod approval gate, which is part of the AWS security boundary via OIDC `environment:prod` trust) to public repos; required reviewers on private repos need Enterprise. Public also enables secret scanning push protection and CodeQL at no cost |
+| 2026-08-22 | DNS hosting for the **whole domain** moves to Route 53 (`infra/root-dns.yaml`); registration stays at GoDaddy; pre-existing site/mail records carried over verbatim; the `mcp` child zone and edge stack are unchanged, with delegation records now in the root zone | Owner decision (existing uses of the domain are expendable); removes every recurring GoDaddy touchpoint and makes the M2 email-auth records (DKIM/SPF/DMARC) fully automatable |
