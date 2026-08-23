@@ -210,18 +210,16 @@ Resources:
       UserPoolId: !Ref UserPool
       GenerateSecret: true
       SupportedIdentityProviders: [COGNITO]
-      ExplicitAuthFlows: [ALLOW_USER_PASSWORD_AUTH, ALLOW_REFRESH_TOKEN_AUTH]
-      AllowedOAuthFlows: [code]
+      # Machine auth: client_credentials is the only grant that issues access
+      # tokens carrying resource-server scopes without a user (InitiateAuth
+      # tokens carry only aws.cognito.signin.user.admin, and pool-wide MFA
+      # would block a CI user anyway). openid is not allowed on this grant.
+      AllowedOAuthFlows: [client_credentials]
       AllowedOAuthFlowsUserPoolClient: true
-      AllowedOAuthScopes: [openid, msg/read, msg/email:send]
-      CallbackURLs: [http://localhost/unused]
+      AllowedOAuthScopes: [msg/read, msg/email:send]
       AccessTokenValidity: 15
-      IdTokenValidity: 15
-      RefreshTokenValidity: 1
       TokenValidityUnits:
         AccessToken: minutes
-        IdToken: minutes
-        RefreshToken: days
       EnableTokenRevocation: true
       PreventUserExistenceErrors: ENABLED
 
@@ -401,7 +399,10 @@ Resources:
             - !Sub https://dev.${DomainName}/mcp/
           COGNITO_ISSUER: !Sub https://cognito-idp.${AWS::Region}.amazonaws.com/${UserPool}
           COGNITO_DOMAIN: !Sub https://${CognitoDomainPrefix}.auth.${AWS::Region}.amazoncognito.com
-          ALLOWED_CLIENT_IDS: !Join [",", [!Ref ClaudeHostedClient, !Ref ClaudeCodeClient]]
+          ALLOWED_CLIENT_IDS: !If
+            - IsDev
+            - !Join [",", [!Ref ClaudeHostedClient, !Ref ClaudeCodeClient, !Ref CiClient]]
+            - !Join [",", [!Ref ClaudeHostedClient, !Ref ClaudeCodeClient]]
           AUTH_METADATA_MODE: !Ref AuthMetadataMode
           REQUIRE_ORIGIN_SECRET: "true"
           ORIGIN_SECRET_PARAM: !Sub /messaging-mcp/${Stage}/origin-secret
