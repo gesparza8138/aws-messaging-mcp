@@ -25,7 +25,10 @@ Parameters:
     Description: AWS Lambda Web Adapter public layer (arm64).
   CognitoDomainPrefix:
     Type: String
-    Description: Globally unique Cognito hosted-UI domain prefix for this stage.
+    AllowedPattern: ^(?!.*(aws|amazon|cognito))[a-z0-9-]{1,63}$
+    Description: >-
+      Globally unique Cognito hosted-UI domain prefix for this stage. Cognito
+      rejects prefixes containing "aws", "amazon", or "cognito".
   AuthMetadataMode:
     Type: String
     AllowedValues: [direct, fronted]
