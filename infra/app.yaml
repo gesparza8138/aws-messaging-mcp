@@ -131,7 +131,9 @@ Resources:
         - msg/rcs:send
         - msg/files:write
       CallbackURLs:
+        # Anthropic's hosted bridge redirects to either domain.
         - https://claude.ai/api/mcp/auth_callback
+        - https://claude.com/api/mcp/auth_callback
       ExplicitAuthFlows: [ALLOW_REFRESH_TOKEN_AUTH]
       AccessTokenValidity: 15
       IdTokenValidity: 15

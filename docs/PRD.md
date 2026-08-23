@@ -372,7 +372,7 @@ Cognito does not support Dynamic Client Registration or CIMD, so both Claude cli
 
 | App client | Type | Callback URLs | Used by |
 | --- | --- | --- | --- |
-| `claude-hosted` | Public, PKCE | `https://claude.ai/api/mcp/auth_callback` | Claude Desktop, claude.ai, Cowork, Routines |
+| `claude-hosted` | Public, PKCE | `https://claude.ai/api/mcp/auth_callback`, `https://claude.com/api/mcp/auth_callback` | Claude Desktop, claude.ai, Cowork, Routines |
 | `claude-code` | Public, PKCE | `http://localhost:8765/callback`, `http://127.0.0.1:8765/callback` | Claude Code with `--callback-port 8765` |
 
 Both clients: `AllowedOAuthFlows: [code]`, `AllowedOAuthScopes: [openid, msg/read, msg/email:send, msg/sms:send, msg/rcs:send, msg/files:write]`, `EnableTokenRevocation: true`, `PreventUserExistenceErrors: ENABLED`.
