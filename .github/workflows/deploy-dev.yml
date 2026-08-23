@@ -61,6 +61,8 @@ jobs:
           echo "allowed_cidrs=$(aws ssm get-parameter --name /messaging-mcp/edge/allowed-cidrs --query Parameter.Value --output text)" >> "$GITHUB_OUTPUT"
           # Empty until the shared eum stack exists; the /opt-in page copes.
           echo "opt_in_number=$(aws ssm get-parameter --name /messaging-mcp/eum/phone-number --query Parameter.Value --output text 2>/dev/null || true)" >> "$GITHUB_OUTPUT"
+          echo "eum_phone_arn=$(aws ssm get-parameter --name /messaging-mcp/eum/phone-arn --query Parameter.Value --output text 2>/dev/null || true)" >> "$GITHUB_OUTPUT"
+          echo "eum_protect_id=$(aws ssm get-parameter --name /messaging-mcp/eum/protect-configuration-id --query Parameter.Value --output text 2>/dev/null || true)" >> "$GITHUB_OUTPUT"
 
       - name: create change set
         id: changeset
@@ -73,12 +75,16 @@ jobs:
             --arg bg "${{ steps.secrets.outputs.break_glass_sha256 }}" \
             --arg cidrs "${{ steps.secrets.outputs.allowed_cidrs }}" \
             --arg optin "${{ steps.secrets.outputs.opt_in_number }}" \
+            --arg phonearn "${{ steps.secrets.outputs.eum_phone_arn }}" \
+            --arg protectid "${{ steps.secrets.outputs.eum_protect_id }}" \
             '$base[0] + [
               {ParameterKey: "CodeKey", ParameterValue: $key},
               {ParameterKey: "OriginSecret", ParameterValue: $os},
               {ParameterKey: "BreakGlassSha256", ParameterValue: $bg},
               {ParameterKey: "AllowedCidrs", ParameterValue: $cidrs},
-              {ParameterKey: "OptInPhoneNumber", ParameterValue: $optin}
+              {ParameterKey: "OptInPhoneNumber", ParameterValue: $optin},
+              {ParameterKey: "OriginationPhoneArn", ParameterValue: $phonearn},
+              {ParameterKey: "ProtectConfigurationId", ParameterValue: $protectid}
             ]' > params.json
           aws cloudformation deploy \
             --stack-name aws-messaging-mcp-dev \
