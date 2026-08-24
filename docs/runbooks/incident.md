@@ -7,11 +7,13 @@ Everything runs from the workstation with owner credentials.
 
 ## 1. Cut client access at the edge (~30 s)
 
-Replace the allow-list with a loopback entry — every MCP call (including
-break-glass) dies at CloudFront; `/files/*` links keep working:
+Swap the whole allow-list (Anthropic egress entries included — a compromised
+Claude session is a realistic caller) for loopback; every MCP call dies at
+CloudFront while `/files/*` links keep working. The previous list is saved
+for `--restore`:
 
 ```bash
-./scripts/update-my-ip.sh --ip 127.0.0.1 --stages "dev prod"
+./scripts/update-my-ip.sh --lockout --stages "dev prod"
 ```
 
 ## 2. Stop the Lambda outright (~30 s)
@@ -48,7 +50,7 @@ aws logs tail /aws-messaging-mcp/prod/eum-events --since 5m --follow
 
 ```bash
 aws lambda delete-function-concurrency --function-name aws-messaging-mcp-prod
-./scripts/update-my-ip.sh   # restores your real IP; re-adds nothing else
+./scripts/update-my-ip.sh --restore --stages "dev prod"
 ```
 
 Re-authenticate clients (step 3 signed everything out), then send one
@@ -63,4 +65,4 @@ Re-authenticate clients (step 3 signed everything out), then send one
 
 | Date | Stage | Time to quiet (steps 1–2) | Notes |
 | --- | --- | --- | --- |
-| _pending first drill (M5 PR C)_ | dev | — | — |
+| 2026-08-24 | dev | ~2 min (17 s edge propagation once the function published; concurrency-zero instant) | Full containment verified: `/healthz` 403 at the edge, exempt paths 429 (function stopped), synthetic invokes threw `TooManyRequestsException`, and the throttle alarm reached `ALARM` within 5 minutes. Restore to healthy took 18 s. Lesson folded back into tooling: the original lockout advice only replaced the owner entry, so `--lockout`/`--restore` modes were added to `update-my-ip.sh` |
