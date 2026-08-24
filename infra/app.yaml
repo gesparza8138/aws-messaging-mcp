@@ -932,8 +932,11 @@ Resources:
               CachedMethods: [GET, HEAD]
               Compress: true
               TrustedKeyGroups: [!Ref SigningKeyGroup]
-              # Managed CachingOptimized.
-              CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6
+              # Managed CachingDisabled: delete-as-revoke (R9) must 403
+              # immediately, and a cached object would keep serving after the
+              # S3 delete. Per-request origin fetches are irrelevant at this
+              # volume; the flat-rate plan's transfer bound is unchanged.
+              CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad
               ResponseHeadersPolicyId: !Ref FilesResponseHeadersPolicy
           - !Ref AWS::NoValue
         DefaultCacheBehavior:
