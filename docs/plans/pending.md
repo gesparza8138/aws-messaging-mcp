@@ -6,20 +6,15 @@ Last updated: 2026-08-24 (post-v0.4.1).
 
 ## Owner actions
 
-- [ ] **Toll-free verification form** (M3-G3). Console → AWS End User
-  Messaging SMS → Phone numbers → the toll-free number → Registrations →
-  *Create registration* → Toll-free. Every field's suggested text is in
-  [aws-prerequisites §2.2](../setup/aws-prerequisites.md); the opt-in page to
-  reference/screenshot is <https://mcp.gabriel-esparza.com/opt-in> (live,
-  renders the number). Carrier review takes 1–2 weeks.
-- [ ] **`gh secret set E2E_TEST_PHONE --env dev`** (M3-G4) — owner mobile in
-  E.164. Turns on the real SMS/MMS e2e stages; the deploy workflow merges it
-  into the dev recipient allow-list at deploy time (never committed).
-- [ ] **Verify the owner handset against the EUM sandbox** (optional until
-  production access): `create-verified-destination-number` →
-  `send-destination-number-verification-code` → `verify-destination-number`
-  with the texted code (commands in [testing.md](../testing.md) /
-  [aws-prerequisites §2.3](../setup/aws-prerequisites.md)).
+- [x] **Toll-free verification form** — submitted 2026-08-24 via the
+  registrations API (`registration-ef01565f27874d13acf093e2ca98fea8`,
+  opt-in screenshot attached, number associated). Carrier review 1–2 weeks.
+- [x] **`E2E_TEST_PHONE` secret** — set 2026-08-24; the owner number rides
+  into dev's recipient allow-list at deploy time.
+- [ ] **Verify the owner handset against the EUM sandbox** — blocked until
+  the toll-free number is `ACTIVE` (the OTP text needs an origination
+  identity; record `vdn-6580cbf9c59340f293761c2809f18efe` is created and the
+  resume command is in aws-prerequisites §2.3).
 
 ## Waiting on AWS
 
