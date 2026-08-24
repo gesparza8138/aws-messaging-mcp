@@ -111,6 +111,7 @@ func (d Deps) filesPutObject() mcp.ToolHandlerFor[schemas.FilesPutObjectInput, P
 		call := &s3.PutObjectInput{
 			Bucket:             aws.String(s.FilesBucket),
 			Key:                aws.String(bucketPrefix + key),
+			CacheControl:       aws.String("private, no-store"),
 			ContentType:        aws.String(in.ContentType),
 			ContentDisposition: aws.String(disposition + `; filename="` + path.Base(key) + `"`),
 			Metadata:           metadata,
