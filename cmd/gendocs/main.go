@@ -15,6 +15,7 @@ import (
 	"sort"
 
 	"github.com/aws/aws-sdk-go-v2/service/pinpointsmsvoicev2"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/sesv2"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -52,6 +53,28 @@ func (stubEUM) DescribePhoneNumbers(context.Context, *pinpointsmsvoicev2.Describ
 	return nil, nil
 }
 
+type stubFiles struct{}
+
+func (stubFiles) PutObject(context.Context, *s3.PutObjectInput, ...func(*s3.Options)) (*s3.PutObjectOutput, error) {
+	return nil, nil
+}
+
+func (stubFiles) HeadObject(context.Context, *s3.HeadObjectInput, ...func(*s3.Options)) (*s3.HeadObjectOutput, error) {
+	return nil, nil
+}
+
+func (stubFiles) CopyObject(context.Context, *s3.CopyObjectInput, ...func(*s3.Options)) (*s3.CopyObjectOutput, error) {
+	return nil, nil
+}
+
+func (stubFiles) DeleteObject(context.Context, *s3.DeleteObjectInput, ...func(*s3.Options)) (*s3.DeleteObjectOutput, error) {
+	return nil, nil
+}
+
+func (stubFiles) ListObjectsV2(context.Context, *s3.ListObjectsV2Input, ...func(*s3.Options)) (*s3.ListObjectsV2Output, error) {
+	return nil, nil
+}
+
 func main() {
 	check := flag.Bool("check", false, "verify pages match instead of writing")
 	dir := flag.String("dir", "docs/tools", "output directory")
@@ -64,7 +87,7 @@ func main() {
 
 func run(check bool, dir string) error {
 	ctx := context.Background()
-	server := mcpserver.NewServer(mcpserver.Deps{Settings: settings.Settings{}, SES: stubSES{}, EUM: stubEUM{}})
+	server := mcpserver.NewServer(mcpserver.Deps{Settings: settings.Settings{}, SES: stubSES{}, EUM: stubEUM{}, Files: stubFiles{}})
 	clientTransport, serverTransport := mcp.NewInMemoryTransports()
 	serverSession, err := server.Connect(ctx, serverTransport, nil)
 	if err != nil {

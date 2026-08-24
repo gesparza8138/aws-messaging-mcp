@@ -13,6 +13,7 @@ import (
 	"github.com/gesparza8138/aws-messaging-mcp/internal/guardrails"
 	"github.com/gesparza8138/aws-messaging-mcp/internal/httpapi"
 	"github.com/gesparza8138/aws-messaging-mcp/internal/settings"
+	"github.com/gesparza8138/aws-messaging-mcp/internal/signing"
 )
 
 // Version is stamped into the MCP server implementation info.
@@ -26,6 +27,10 @@ type Deps struct {
 	EUM      awsclients.EUM
 	Media    awsclients.MediaStore
 	EventLog awsclients.EventLog
+	Files    awsclients.FilesStore
+	Presign  awsclients.FilesPresigner
+	Metrics  awsclients.MetricReader
+	Signer   *signing.Signer
 	Limiter  *guardrails.Limiter
 }
 
@@ -93,6 +98,28 @@ func NewServer(d Deps) *mcp.Server {
 			Name:        "sms_get_message_status",
 			Description: "Delivery status for a MessageId from the event trail; requires msg/read.",
 		}, d.getMessageStatus())
+	}
+	if d.Files != nil {
+		mcp.AddTool(server, &mcp.Tool{
+			Name:        "files_put_object",
+			Description: "Upload an inline file (≤4 MB) and get back a CloudFront-signed download link; requires msg/files:write. Supports DryRun.",
+		}, d.filesPutObject())
+		mcp.AddTool(server, &mcp.Tool{
+			Name:        "files_create_upload_url",
+			Description: "Presigned PUT URL for large files (≤500 MB, 15-minute validity); sign afterwards with files_create_signed_url; requires msg/files:write.",
+		}, d.filesCreateUploadURL())
+		mcp.AddTool(server, &mcp.Tool{
+			Name:        "files_create_signed_url",
+			Description: "Sign (or re-sign) a shared object into a CloudFront download link, optionally IP-restricted; requires msg/files:write.",
+		}, d.filesCreateSignedURL())
+		mcp.AddTool(server, &mcp.Tool{
+			Name:        "files_list_objects",
+			Description: "List shared objects with sizes and link expiries; requires msg/read.",
+		}, d.filesListObjects())
+		mcp.AddTool(server, &mcp.Tool{
+			Name:        "files_delete_object",
+			Description: "Delete a shared object so its links immediately 403; requires msg/files:write.",
+		}, d.filesDeleteObject())
 	}
 	return server
 }
