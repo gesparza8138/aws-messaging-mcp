@@ -84,6 +84,7 @@ jobs:
             echo "PEMEOF"
           } >> "$GITHUB_OUTPUT"
           echo "files_key_fp=$(aws ssm get-parameter --name /messaging-mcp/prod/files-public-key-pem --query Parameter.Value --output text 2>/dev/null | sha256sum | cut -c1-12 || true)" >> "$GITHUB_OUTPUT"
+          echo "files_key_slot=$(aws ssm get-parameter --name /messaging-mcp/prod/files-key-slot --query Parameter.Value --output text 2>/dev/null || echo a)" >> "$GITHUB_OUTPUT"
       - name: deploy
         run: |
           # A JSON parameter file sidesteps the CLI's Key=Value parser, which
@@ -98,6 +99,7 @@ jobs:
             --arg protectid "${{ steps.secrets.outputs.eum_protect_id }}" \
             --arg filespem "${{ steps.secrets.outputs.files_pem }}" \
             --arg fileskeyfp "${{ steps.secrets.outputs.files_key_fp }}" \
+            --arg fileskeyslot "${{ steps.secrets.outputs.files_key_slot }}" \
             '$base[0] + [
               {ParameterKey: "CodeKey", ParameterValue: $key},
               {ParameterKey: "OriginSecret", ParameterValue: $os},
@@ -107,7 +109,8 @@ jobs:
               {ParameterKey: "OriginationPhoneArn", ParameterValue: $phonearn},
               {ParameterKey: "ProtectConfigurationId", ParameterValue: $protectid},
               {ParameterKey: "FilesPublicKeyPem", ParameterValue: ($filespem | rtrimstr("\n"))},
-              {ParameterKey: "FilesKeyFingerprint", ParameterValue: $fileskeyfp}
+              {ParameterKey: "FilesKeyFingerprint", ParameterValue: $fileskeyfp},
+              {ParameterKey: "FilesKeySlot", ParameterValue: $fileskeyslot}
             ]' > params.json
           aws cloudformation deploy \
             --stack-name aws-messaging-mcp-prod \

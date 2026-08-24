@@ -92,12 +92,22 @@ func rotateSigningKey(ctx context.Context, args []string) error {
 	pubPEM := pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: pubDER})
 
 	client := ssm.NewFromConfig(cfg)
+	// Toggle the active key slot: the flip is what makes the next deploy
+	// REPLACE the CloudFront public key (in-place EncodedKey updates are
+	// invalid, and the resource has no create-only properties).
+	slot := "a"
+	if current, err := client.GetParameter(ctx, &ssm.GetParameterInput{
+		Name: aws.String("/messaging-mcp/" + *stage + "/files-key-slot"),
+	}); err == nil && aws.ToString(current.Parameter.Value) == "a" {
+		slot = "b"
+	}
 	for name, put := range map[string]struct {
 		value string
 		kind  ssmtypes.ParameterType
 	}{
 		"/messaging-mcp/" + *stage + "/files-signing-key":    {string(privPEM), ssmtypes.ParameterTypeSecureString},
 		"/messaging-mcp/" + *stage + "/files-public-key-pem": {string(pubPEM), ssmtypes.ParameterTypeString},
+		"/messaging-mcp/" + *stage + "/files-key-slot":       {slot, ssmtypes.ParameterTypeString},
 	} {
 		if _, err := client.PutParameter(ctx, &ssm.PutParameterInput{
 			Name:      aws.String(name),
