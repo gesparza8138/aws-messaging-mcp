@@ -69,7 +69,12 @@ func main() {
 	})
 
 	if os.Getenv("AWS_LAMBDA_RUNTIME_API") != "" {
-		lambda.Start(lambdaadapter.New(handler).Invoke)
+		// Tasks (scheduler invocations, M4b-1) are registered here as they
+		// land; the files-cleanup job arrives with the files tools.
+		lambda.Start((&lambdaadapter.Mux{
+			HTTP:  lambdaadapter.New(handler),
+			Tasks: map[string]lambdaadapter.TaskFunc{},
+		}).Invoke)
 		return
 	}
 	log.Printf("listening on %s (stage %s)", *listen, s.Stage)
