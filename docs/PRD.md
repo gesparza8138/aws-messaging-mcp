@@ -584,6 +584,9 @@ All docs are GitHub-flavored Markdown in the repo, rendered by GitHub (Mermaid d
 | `README.md` | Everyone | What it is, architecture diagram, 5-minute quick start, badges (CI, coverage, license) |
 | `docs/PRD.md` | Owner / contributors | This document |
 | `docs/architecture.md` | Contributors | Deep dive: request path, auth flow, data flow, why-not-X |
+| `docs/server.md` | Owner + contributors | The Lambda's three entry paths, the request pipeline, and per-tool behaviour for all 14 tools |
+| `docs/cicd.md` | Owner + contributors | The pipeline: six required checks, branch protections, OIDC deploys, environment gates, where secrets live |
+| `docs/infrastructure.md` | Owner + contributors | The six stacks, parameter/SSM flow, conditional-wiring conventions, flat-rate plan constraints |
 | `docs/setup/aws-prerequisites.md` | Owner | SES domain identity (automated via `infra/ses-domain.yaml`), production-access request text, toll-free request + verification form answers, Cognito users, signing key, Free-plan enrolment, checklist |
 | `docs/setup/github.md` | Owner | Step-by-step `gh` CLI setup: repo, security features, environments, rulesets, OIDC variables, Actions permissions; runnable as `scripts/setup-github.sh` |
 | `docs/setup/dns.md` | Owner | GoDaddy → Route 53 subdomain delegation, certificate, SES sender-domain options |

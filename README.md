@@ -31,6 +31,9 @@ Full detail: [docs/PRD.md](docs/PRD.md) §4.
 | Doc | Purpose |
 | --- | --- |
 | [docs/PRD.md](docs/PRD.md) | Source of truth: scope, architecture, auth, guardrails, milestones |
+| [docs/server.md](docs/server.md) | The Lambda's entry paths, the request pipeline, every tool explained |
+| [docs/cicd.md](docs/cicd.md) | The pipeline and every security gate on the road to prod |
+| [docs/infrastructure.md](docs/infrastructure.md) | The stacks, parameter flow, and IaC conventions |
 | [docs/setup/github.md](docs/setup/github.md) | Repository and CI/CD configuration |
 | [docs/setup/dns.md](docs/setup/dns.md) | GoDaddy → Route 53 subdomain delegation |
 | [docs/setup/aws-prerequisites.md](docs/setup/aws-prerequisites.md) | SES, toll-free, Cognito prerequisites |
