@@ -2,6 +2,9 @@
 
 Deep-dive companion to [PRD §4](PRD.md#4-architecture). This page tracks what
 is **implemented**; the PRD describes the target. Updated per milestone.
+Subsystem detail lives in dedicated pages: [server.md](server.md) (the
+Lambda and every tool), [cicd.md](cicd.md) (pipeline and security gates),
+and [infrastructure.md](infrastructure.md) (stacks and IaC conventions).
 
 ## Application layout (M1, Go)
 
