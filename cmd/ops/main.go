@@ -13,9 +13,12 @@ package main
 import (
 	"context"
 	"crypto/rand"
+	"crypto/rsa"
 	"crypto/sha256"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/pem"
 	"flag"
 	"fmt"
 	"os"
@@ -40,6 +43,8 @@ func main() {
 		err = rotateSecret(ctx, os.Args[2:])
 	case "bootstrap-user":
 		err = bootstrapUser(ctx, os.Args[2:])
+	case "rotate-signing-key":
+		err = rotateSigningKey(ctx, os.Args[2:])
 	default:
 		usage()
 	}
@@ -50,8 +55,62 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: ops rotate-secret --stage dev|prod [--origin-only|--break-glass-only]\n       ops bootstrap-user --stage dev|prod --email addr")
+	fmt.Fprintln(os.Stderr, "usage: ops rotate-secret --stage dev|prod [--origin-only|--break-glass-only]\n       ops bootstrap-user --stage dev|prod --email addr\n       ops rotate-signing-key --stage dev|prod")
 	os.Exit(2)
+}
+
+// rotateSigningKey generates the CloudFront signing key pair for the files
+// bucket (M4b-2): private key to SSM SecureString, public PEM to SSM for the
+// deploy workflows to feed the SigningPublicKey resource. Re-running rotates
+// the pair; the next deploy swaps the key group and every old link dies
+// (the R9 emergency lever).
+func rotateSigningKey(ctx context.Context, args []string) error {
+	fs := flag.NewFlagSet("rotate-signing-key", flag.ExitOnError)
+	stage := fs.String("stage", "", "dev or prod")
+	region := fs.String("region", "us-west-2", "AWS region")
+	_ = fs.Parse(args)
+	if *stage != "dev" && *stage != "prod" {
+		return fmt.Errorf("--stage must be dev or prod")
+	}
+	cfg, err := awsConfig(ctx, *region)
+	if err != nil {
+		return err
+	}
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		return err
+	}
+	privDER, err := x509.MarshalPKCS8PrivateKey(key)
+	if err != nil {
+		return err
+	}
+	privPEM := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: privDER})
+	pubDER, err := x509.MarshalPKIXPublicKey(&key.PublicKey)
+	if err != nil {
+		return err
+	}
+	pubPEM := pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: pubDER})
+
+	client := ssm.NewFromConfig(cfg)
+	for name, put := range map[string]struct {
+		value string
+		kind  ssmtypes.ParameterType
+	}{
+		"/messaging-mcp/" + *stage + "/files-signing-key":    {string(privPEM), ssmtypes.ParameterTypeSecureString},
+		"/messaging-mcp/" + *stage + "/files-public-key-pem": {string(pubPEM), ssmtypes.ParameterTypeString},
+	} {
+		if _, err := client.PutParameter(ctx, &ssm.PutParameterInput{
+			Name:      aws.String(name),
+			Value:     aws.String(put.value),
+			Type:      put.kind,
+			Overwrite: aws.Bool(true),
+		}); err != nil {
+			return fmt.Errorf("put %s: %w", name, err)
+		}
+		fmt.Println("wrote", name)
+	}
+	fmt.Printf("signing key rotated for %s; redeploy the stage to register the new public key (old links die on the key-group swap)\n", *stage)
+	return nil
 }
 
 func awsConfig(ctx context.Context, region string) (aws.Config, error) {
