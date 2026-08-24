@@ -97,6 +97,17 @@ Parameters:
     Type: String
     Default: ""
     Description: Read from SSM /messaging-mcp/eum/protect-configuration-id.
+  FilesKeySlot:
+    Type: String
+    AllowedValues: [a, b]
+    Default: a
+    Description: >-
+      Which of the two public-key slots is active. cmd/ops rotate-signing-key
+      toggles it (SSM /messaging-mcp/<stage>/files-key-slot); the flip makes
+      CloudFormation create the new slot's key, repoint the key group, and
+      delete the old one - the only pure-CFN way to rotate, because the
+      resource has no create-only properties and in-place EncodedKey updates
+      are invalid (M5 finding).
   FilesKeyFingerprint:
     Type: String
     Default: ""
@@ -152,6 +163,8 @@ Conditions:
   HasEumPhone: !Not [!Equals [!Ref OriginationPhoneArn, ""]]
   HasProtectConfig: !Not [!Equals [!Ref ProtectConfigurationId, ""]]
   HasFilesKey: !Not [!Equals [!Ref FilesPublicKeyPem, ""]]
+  UseKeySlotA: !And [!Condition HasFilesKey, !Equals [!Ref FilesKeySlot, a]]
+  UseKeySlotB: !And [!Condition HasFilesKey, !Equals [!Ref FilesKeySlot, b]]
 
 Resources:
   UserPool:
@@ -510,13 +523,22 @@ Resources:
         SigningBehavior: always
         SigningProtocol: sigv4
 
-  SigningPublicKey:
+  SigningPublicKeyA:
     Type: AWS::CloudFront::PublicKey
-    Condition: HasFilesKey
+    Condition: UseKeySlotA
     Properties:
       PublicKeyConfig:
-        Name: !Sub aws-messaging-mcp-${Stage}-files
-        CallerReference: !Sub aws-messaging-mcp-${Stage}-files-${FilesKeyFingerprint}
+        Name: !Sub aws-messaging-mcp-${Stage}-files-a
+        CallerReference: !Sub aws-messaging-mcp-${Stage}-files-a-${FilesKeyFingerprint}
+        EncodedKey: !Ref FilesPublicKeyPem
+
+  SigningPublicKeyB:
+    Type: AWS::CloudFront::PublicKey
+    Condition: UseKeySlotB
+    Properties:
+      PublicKeyConfig:
+        Name: !Sub aws-messaging-mcp-${Stage}-files-b
+        CallerReference: !Sub aws-messaging-mcp-${Stage}-files-b-${FilesKeyFingerprint}
         EncodedKey: !Ref FilesPublicKeyPem
 
   SigningKeyGroup:
@@ -525,7 +547,8 @@ Resources:
     Properties:
       KeyGroupConfig:
         Name: !Sub aws-messaging-mcp-${Stage}-files
-        Items: [!Ref SigningPublicKey]
+        Items:
+          - !If [UseKeySlotB, !Ref SigningPublicKeyB, !Ref SigningPublicKeyA]
 
   FilesCleanupScheduleRole:
     Type: AWS::IAM::Role
@@ -763,7 +786,7 @@ Resources:
           MEDIA_BUCKET: !Ref MediaBucket
           EUM_EVENTS_LOG_GROUP: !Sub /aws-messaging-mcp/${Stage}/eum-events
           FILES_BUCKET: !Ref FilesBucket
-          FILES_KEY_PAIR_ID: !If [HasFilesKey, !Ref SigningPublicKey, ""]
+          FILES_KEY_PAIR_ID: !If [HasFilesKey, !If [UseKeySlotB, !Ref SigningPublicKeyB, !Ref SigningPublicKeyA], ""]
           FILES_SIGNING_KEY_PARAM: !Sub /messaging-mcp/${Stage}/files-signing-key
           FILES_MAX_EXPIRY_DAYS: !Ref FilesMaxExpiryDays
           FILES_MAX_UPLOAD_BYTES: !Ref FilesMaxUploadBytes
