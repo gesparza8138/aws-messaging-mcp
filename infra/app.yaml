@@ -97,6 +97,15 @@ Parameters:
     Type: String
     Default: ""
     Description: Read from SSM /messaging-mcp/eum/protect-configuration-id.
+  FilesKeyFingerprint:
+    Type: String
+    Default: ""
+    Description: >-
+      Short digest of FilesPublicKeyPem, computed by the deploy workflows.
+      Baked into the public key's CallerReference so a rotated PEM REPLACES
+      the CloudFront public key (EncodedKey is immutable in place - M5
+      finding); the key group and Lambda env follow the new id in the same
+      deploy.
   FilesPublicKeyPem:
     Type: String
     Default: ""
@@ -507,7 +516,7 @@ Resources:
     Properties:
       PublicKeyConfig:
         Name: !Sub aws-messaging-mcp-${Stage}-files
-        CallerReference: !Sub aws-messaging-mcp-${Stage}-files-v1
+        CallerReference: !Sub aws-messaging-mcp-${Stage}-files-${FilesKeyFingerprint}
         EncodedKey: !Ref FilesPublicKeyPem
 
   SigningKeyGroup:
