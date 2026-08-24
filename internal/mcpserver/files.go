@@ -21,6 +21,11 @@ import (
 
 const expiresAtMetaKey = "expires-at"
 
+// bucketPrefix aligns S3 keys with the public URI: CloudFront forwards the
+// full /files/shared/... path to the origin, so objects live under
+// files/shared/... while tool-facing keys stay shared/... .
+const bucketPrefix = "files/"
+
 // sharedKey builds shared/<random>/<name>; the random segment keeps keys
 // unguessable and collision-free (PRD §5.2).
 func sharedKey(fileName string) string {
@@ -105,7 +110,7 @@ func (d Deps) filesPutObject() mcp.ToolHandlerFor[schemas.FilesPutObjectInput, P
 		}
 		call := &s3.PutObjectInput{
 			Bucket:             aws.String(s.FilesBucket),
-			Key:                aws.String(key),
+			Key:                aws.String(bucketPrefix + key),
 			ContentType:        aws.String(in.ContentType),
 			ContentDisposition: aws.String(disposition + `; filename="` + path.Base(key) + `"`),
 			Metadata:           metadata,
@@ -167,7 +172,7 @@ func (d Deps) filesCreateUploadURL() mcp.ToolHandlerFor[schemas.FilesCreateUploa
 		expires := 15 * time.Minute
 		presigned, err := d.Presign.PresignPutObject(ctx, &s3.PutObjectInput{
 			Bucket:        aws.String(s.FilesBucket),
-			Key:           aws.String(key),
+			Key:           aws.String(bucketPrefix + key),
 			ContentType:   aws.String(in.ContentType),
 			ContentLength: aws.Int64(in.ContentLength),
 		}, func(o *s3.PresignOptions) { o.Expires = expires })
@@ -227,7 +232,7 @@ func (d Deps) filesCreateSignedURL() mcp.ToolHandlerFor[schemas.FilesCreateSigne
 			return res, SignedURLOutput{}, nil
 		}
 		head, err := d.Files.HeadObject(ctx, &s3.HeadObjectInput{
-			Bucket: aws.String(s.FilesBucket), Key: aws.String(in.Key),
+			Bucket: aws.String(s.FilesBucket), Key: aws.String(bucketPrefix + in.Key),
 		})
 		if err != nil {
 			return toolError("object not found: " + awsclients.ErrorText(err)), SignedURLOutput{}, nil
@@ -242,8 +247,8 @@ func (d Deps) filesCreateSignedURL() mcp.ToolHandlerFor[schemas.FilesCreateSigne
 			metadata[expiresAtMetaKey] = expiry.UTC().Format(time.RFC3339)
 			if _, err := d.Files.CopyObject(ctx, &s3.CopyObjectInput{
 				Bucket:             aws.String(s.FilesBucket),
-				Key:                aws.String(in.Key),
-				CopySource:         aws.String(s.FilesBucket + "/" + in.Key),
+				Key:                aws.String(bucketPrefix + in.Key),
+				CopySource:         aws.String(s.FilesBucket + "/" + bucketPrefix + in.Key),
 				MetadataDirective:  "REPLACE",
 				Metadata:           metadata,
 				ContentType:        head.ContentType,
@@ -290,7 +295,7 @@ func (d Deps) filesListObjects() mcp.ToolHandlerFor[schemas.FilesListObjectsInpu
 		}
 		resp, err := d.Files.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
 			Bucket:  aws.String(d.Settings.FilesBucket),
-			Prefix:  aws.String("shared/"),
+			Prefix:  aws.String(bucketPrefix + "shared/"),
 			MaxKeys: aws.Int32(maxKeys),
 		})
 		if err != nil {
@@ -299,7 +304,7 @@ func (d Deps) filesListObjects() mcp.ToolHandlerFor[schemas.FilesListObjectsInpu
 		out := ListFilesOutput{Objects: []FileEntry{}}
 		for _, obj := range resp.Contents {
 			entry := FileEntry{
-				Key:          aws.ToString(obj.Key),
+				Key:          strings.TrimPrefix(aws.ToString(obj.Key), bucketPrefix),
 				SizeBytes:    aws.ToInt64(obj.Size),
 				LastModified: aws.ToTime(obj.LastModified).UTC().Format(time.RFC3339),
 			}
@@ -329,7 +334,7 @@ func (d Deps) filesDeleteObject() mcp.ToolHandlerFor[schemas.FilesDeleteObjectIn
 			return toolError("Key must be under shared/"), DeleteFileOutput{}, nil
 		}
 		if _, err := d.Files.DeleteObject(ctx, &s3.DeleteObjectInput{
-			Bucket: aws.String(d.Settings.FilesBucket), Key: aws.String(in.Key),
+			Bucket: aws.String(d.Settings.FilesBucket), Key: aws.String(bucketPrefix + in.Key),
 		}); err != nil {
 			return toolError(awsclients.ErrorText(err)), DeleteFileOutput{}, nil
 		}
@@ -345,7 +350,7 @@ func (d Deps) CleanupFiles(ctx context.Context) error {
 	for {
 		page, err := d.Files.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
 			Bucket:            aws.String(d.Settings.FilesBucket),
-			Prefix:            aws.String("shared/"),
+			Prefix:            aws.String(bucketPrefix + "shared/"),
 			ContinuationToken: token,
 		})
 		if err != nil {

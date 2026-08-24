@@ -677,7 +677,9 @@ Resources:
                   - s3:PutObject
                   - s3:GetObject
                   - s3:DeleteObject
-                Resource: !Sub ${FilesBucket.Arn}/shared/*
+                # files/shared/*: S3 keys carry the files/ prefix so the
+                # bucket layout matches the public /files/* URI.
+                Resource: !Sub ${FilesBucket.Arn}/files/shared/*
               - Sid: FilesList
                 Effect: Allow
                 Action: s3:ListBucket

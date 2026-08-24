@@ -264,14 +264,14 @@ func TestFilesCreateSignedURL(t *testing.T) {
 }
 
 func TestFilesListAndDelete(t *testing.T) {
-	files := &fakeFiles{listKeys: []string{"shared/a/x.pdf"}, headMeta: map[string]string{"expires-at": "2027-01-01T00:00:00Z"}}
+	files := &fakeFiles{listKeys: []string{"files/shared/a/x.pdf"}, headMeta: map[string]string{"expires-at": "2027-01-01T00:00:00Z"}}
 	d := filesDeps(t, files, nil, nil)
 	res, out, err := d.filesListObjects()(authedCtx("msg/read"), nil, schemas.FilesListObjectsInput{})
 	if err != nil || res != nil || len(out.Objects) != 1 || out.Objects[0].ExpiresAt == "" {
 		t.Fatalf("list: res=%v err=%v out=%+v", res, err, out)
 	}
 	dres, dout, err := d.filesDeleteObject()(authedCtx("msg/files:write"), nil, schemas.FilesDeleteObjectInput{Key: "shared/a/x.pdf"})
-	if err != nil || dres != nil || !dout.Deleted || aws.ToString(files.delIn.Key) != "shared/a/x.pdf" {
+	if err != nil || dres != nil || !dout.Deleted || aws.ToString(files.delIn.Key) != "files/shared/a/x.pdf" {
 		t.Fatalf("delete: %+v %+v", dres, dout)
 	}
 	if res, _, _ := d.filesDeleteObject()(authedCtx("msg/files:write"), nil, schemas.FilesDeleteObjectInput{Key: "secret/x"}); res == nil || !res.IsError {
@@ -285,12 +285,12 @@ func TestFilesListAndDelete(t *testing.T) {
 
 func TestCleanupFiles(t *testing.T) {
 	past := time.Now().Add(-time.Hour).UTC().Format(time.RFC3339)
-	files := &fakeFiles{listKeys: []string{"shared/a/old.pdf"}, headMeta: map[string]string{"expires-at": past}}
+	files := &fakeFiles{listKeys: []string{"files/shared/a/old.pdf"}, headMeta: map[string]string{"expires-at": past}}
 	d := filesDeps(t, files, nil, nil)
 	if err := d.CleanupFiles(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if files.delIn == nil || aws.ToString(files.delIn.Key) != "shared/a/old.pdf" {
+	if files.delIn == nil || aws.ToString(files.delIn.Key) != "files/shared/a/old.pdf" {
 		t.Fatalf("expired object not deleted: %+v", files.delIn)
 	}
 	files.delIn = nil
