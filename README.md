@@ -36,6 +36,7 @@ Full detail: [docs/PRD.md](docs/PRD.md) §4.
 | [docs/setup/aws-prerequisites.md](docs/setup/aws-prerequisites.md) | SES, toll-free, Cognito prerequisites |
 | [docs/tools/README.md](docs/tools/README.md) | Tool reference, generated from the live registry |
 | [docs/testing.md](docs/testing.md) | Test tiers and how to run the e2e suite |
+| [docs/plans/pending.md](docs/plans/pending.md) | Living checklist: owner actions, AWS waits, next milestones |
 | [docs/plans/m0-m1.md](docs/plans/m0-m1.md) | Current implementation plan |
 
 ## Development
