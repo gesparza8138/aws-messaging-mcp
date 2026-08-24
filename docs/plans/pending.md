@@ -32,9 +32,8 @@ Last updated: 2026-08-24.
 
 ## Next milestones
 
-- **M4b — file sharing**: CloudFront-signed URLs from the files bucket
-  (`files_put_object`, `files_create_upload_url`, `files_create_signed_url`,
-  `files_delete_object`), signing-key setup, cleanup schedule. PRD §5.3/§16.
+- [x] **M4b — file sharing** (built 2026-08-24; PRs #55-#59 + docs; awaiting
+  the v0.4.0 release gate). See [docs/files.md](../files.md).
 - **M5 — hardening**: alarms, budget, dashboard, `ReservedConcurrency`
   (blocked on the quota above), external-link checking in docs CI,
   `scripts/enroll-pricing-plan.sh` rewrite or removal.

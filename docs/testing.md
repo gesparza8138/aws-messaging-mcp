@@ -8,7 +8,7 @@ run in CI on every pull request; e2e runs against the deployed dev stack.
 | Unit | `internal/*/…_test.go` | `make test` | Auth matrix, guardrails, adapters, settings — coverage ≥ 90 % overall, 100 % for `internal/auth` and `internal/guardrails` (`scripts/check_coverage.sh`) |
 | Integration | `internal/httpapi/server_test.go` | `make test` | Full HTTP stack in-process: OAuth and break-glass round trips, 401/403 contracts, both `/mcp` paths, metadata documents |
 | Contract | `internal/schemas/contract_test.go` | `make test` | Tool schemas mirror the AWS SDK Go v2 request shapes field-for-field (PRD G5) |
-| E2E | `e2e/` (build tag `e2e`) | `make e2e` | The deployed dev stack through the public edge: allow-list, Cognito `client_credentials` token, every tool, one real email, its `Delivery` event in the SES trail |
+| E2E | `e2e/` (build tag `e2e`) | `make e2e` | The deployed dev stack through the public edge: allow-list, Cognito `client_credentials` token, every tool, one real email + its `Delivery` event, SMS/MMS when configured, and the full files contract (signed download, tampered/expired/deleted → 403, presigned PUT round trip) |
 
 ## Running e2e
 
