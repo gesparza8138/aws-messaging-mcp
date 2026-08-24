@@ -97,6 +97,29 @@ Parameters:
     Type: String
     Default: ""
     Description: Read from SSM /messaging-mcp/eum/protect-configuration-id.
+  FilesPublicKeyPem:
+    Type: String
+    Default: ""
+    Description: >-
+      CloudFront signing public key (PEM). The deploy workflows read it from
+      SSM /messaging-mcp/<stage>/files-public-key-pem once cmd/ops
+      rotate-signing-key has run; while empty the files behavior, key group,
+      and tools stay off (M4b-2).
+  FilesMaxExpiryDays:
+    Type: Number
+    Default: 365
+  FilesMaxUploadBytes:
+    Type: Number
+    Default: 524288000
+  FilesQuotaBytes:
+    Type: Number
+    Default: 5368709120
+    Description: Total-bucket quota backstop (PRD 8); dev 5 GB, prod 20 GB via params.
+  AllowRiskyContentTypes:
+    Type: String
+    AllowedValues: ["true", "false"]
+    Default: "false"
+    Description: Dev-only bypass of the files content-type deny-list.
   AllowedCidrs:
     Type: String
     Description: >-
@@ -119,6 +142,7 @@ Conditions:
   HasReservedConcurrency: !Not [!Equals [!Ref ReservedConcurrency, 0]]
   HasEumPhone: !Not [!Equals [!Ref OriginationPhoneArn, ""]]
   HasProtectConfig: !Not [!Equals [!Ref ProtectConfigurationId, ""]]
+  HasFilesKey: !Not [!Equals [!Ref FilesPublicKeyPem, ""]]
 
 Resources:
   UserPool:
@@ -400,6 +424,150 @@ Resources:
             AbortIncompleteMultipartUpload:
               DaysAfterInitiation: 1
 
+  FilesBucket:
+    Type: AWS::S3::Bucket
+    Metadata:
+      checkov:
+        skip:
+          - id: CKV_AWS_18
+            comment: Access logging deferred to M5 with the rest of observability.
+          - id: CKV_AWS_21
+            comment: Versioning would resurrect "deleted = revoked" objects; delete-as-revoke is the R9 control.
+      cfn_nag:
+        rules_to_suppress:
+          - id: W35
+            reason: Access logging deferred to M5; bucket is private behind OAC with signed URLs.
+    Properties:
+      # The ONLY bucket behind CloudFront (hard rule); everything else is
+      # reachable solely by the Lambda role.
+      BucketName: !Sub aws-messaging-mcp-files-${AWS::AccountId}-${Stage}
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      CorsConfiguration:
+        CorsRules:
+          # Presigned PUT uploads carry their own auth; the URL is the secret.
+          - AllowedMethods: [PUT]
+            AllowedOrigins: ["*"]
+            AllowedHeaders: [content-type, content-length]
+            MaxAge: 900
+      LifecycleConfiguration:
+        Rules:
+          # Deletion is the cleanup task's job (per-object expires-at); only
+          # abandoned multiparts age out here.
+          - Id: abort-incomplete-multipart
+            Status: Enabled
+            AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 1
+
+  FilesBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref FilesBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: "*"
+            Action: "s3:*"
+            Resource:
+              - !GetAtt FilesBucket.Arn
+              - !Sub ${FilesBucket.Arn}/*
+            Condition:
+              Bool:
+                aws:SecureTransport: "false"
+          - Sid: CloudFrontRead
+            Effect: Allow
+            Principal: { Service: cloudfront.amazonaws.com }
+            Action: s3:GetObject
+            Resource: !Sub ${FilesBucket.Arn}/*
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub arn:${AWS::Partition}:cloudfront::${AWS::AccountId}:distribution/${Distribution}
+
+  FilesOAC:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub aws-messaging-mcp-${Stage}-files
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  SigningPublicKey:
+    Type: AWS::CloudFront::PublicKey
+    Condition: HasFilesKey
+    Properties:
+      PublicKeyConfig:
+        Name: !Sub aws-messaging-mcp-${Stage}-files
+        CallerReference: !Sub aws-messaging-mcp-${Stage}-files-v1
+        EncodedKey: !Ref FilesPublicKeyPem
+
+  SigningKeyGroup:
+    Type: AWS::CloudFront::KeyGroup
+    Condition: HasFilesKey
+    Properties:
+      KeyGroupConfig:
+        Name: !Sub aws-messaging-mcp-${Stage}-files
+        Items: [!Ref SigningPublicKey]
+
+  FilesResponseHeadersPolicy:
+    Type: AWS::CloudFront::ResponseHeadersPolicy
+    Properties:
+      ResponseHeadersPolicyConfig:
+        Name: !Sub aws-messaging-mcp-${Stage}-files
+        CustomHeadersConfig:
+          Items:
+            - { Header: Cache-Control, Value: "private, no-store", Override: false }
+        SecurityHeadersConfig:
+          ContentTypeOptions: { Override: true }
+          FrameOptions: { FrameOption: DENY, Override: true }
+          ContentSecurityPolicy:
+            ContentSecurityPolicy: "default-src 'none'; sandbox"
+            Override: true
+
+  FilesCleanupScheduleRole:
+    Type: AWS::IAM::Role
+    Condition: HasFilesKey
+    Properties:
+      RoleName: !Sub aws-messaging-mcp-${Stage}-files-cleanup
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: scheduler.amazonaws.com }
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+      Policies:
+        - PolicyName: invoke
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: lambda:InvokeFunction
+                Resource: !GetAtt McpFunction.Arn
+
+  FilesCleanupSchedule:
+    Type: AWS::Scheduler::Schedule
+    Condition: HasFilesKey
+    Properties:
+      Name: !Sub aws-messaging-mcp-${Stage}-files-cleanup
+      ScheduleExpression: rate(1 day)
+      FlexibleTimeWindow: { Mode: FLEXIBLE, MaximumWindowInMinutes: 60 }
+      Target:
+        Arn: !GetAtt McpFunction.Arn
+        RoleArn: !GetAtt FilesCleanupScheduleRole.Arn
+        Input: '{"task":"files-cleanup"}'
+
   MediaBucketPolicy:
     Type: AWS::S3::BucketPolicy
     Properties:
@@ -503,6 +671,21 @@ Resources:
                   - s3:PutObject
                   - s3:GetObject
                 Resource: !Sub ${MediaBucket.Arn}/mms/*
+              - Sid: FilesObjects
+                Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:GetObject
+                  - s3:DeleteObject
+                Resource: !Sub ${FilesBucket.Arn}/shared/*
+              - Sid: FilesList
+                Effect: Allow
+                Action: s3:ListBucket
+                Resource: !GetAtt FilesBucket.Arn
+              - Sid: FilesQuotaMetric
+                Effect: Allow
+                Action: cloudwatch:GetMetricData
+                Resource: "*"
               - Sid: SesRead
                 Effect: Allow
                 Action:
@@ -583,6 +766,13 @@ Resources:
           SMS_MAX_PRICE: !Ref SmsMaxPrice
           MEDIA_BUCKET: !Ref MediaBucket
           EUM_EVENTS_LOG_GROUP: !Sub /aws-messaging-mcp/${Stage}/eum-events
+          FILES_BUCKET: !Ref FilesBucket
+          FILES_KEY_PAIR_ID: !If [HasFilesKey, !Ref SigningPublicKey, ""]
+          FILES_SIGNING_KEY_PARAM: !Sub /messaging-mcp/${Stage}/files-signing-key
+          FILES_MAX_EXPIRY_DAYS: !Ref FilesMaxExpiryDays
+          FILES_MAX_UPLOAD_BYTES: !Ref FilesMaxUploadBytes
+          FILES_QUOTA_BYTES: !Ref FilesQuotaBytes
+          ALLOW_RISKY_CONTENT_TYPES: !If [IsDev, !Ref AllowRiskyContentTypes, "false"]
           SES_SENDER_ADDRESSES: !Ref SesSenderAddresses
           RECIPIENT_ALLOW_LIST: !Ref RecipientAllowList
           MAX_RECIPIENTS: !Ref MaxRecipients
@@ -719,6 +909,10 @@ Resources:
           SslSupportMethod: sni-only
           MinimumProtocolVersion: TLSv1.2_2021
         Origins:
+          - Id: files-s3
+            DomainName: !GetAtt FilesBucket.RegionalDomainName
+            OriginAccessControlId: !GetAtt FilesOAC.Id
+            S3OriginConfig: {}
           - Id: mcp-lambda
             DomainName: !Select [2, !Split ["/", !GetAtt McpFunctionUrl.FunctionUrl]]
             CustomOriginConfig:
@@ -727,6 +921,19 @@ Resources:
             OriginCustomHeaders:
               - HeaderName: X-Origin-Secret
                 HeaderValue: !Ref OriginSecret
+        CacheBehaviors: !If
+          - HasFilesKey
+          - - PathPattern: /files/*
+              TargetOriginId: files-s3
+              ViewerProtocolPolicy: https-only
+              AllowedMethods: [GET, HEAD]
+              CachedMethods: [GET, HEAD]
+              Compress: true
+              TrustedKeyGroups: [!Ref SigningKeyGroup]
+              # Managed CachingOptimized.
+              CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6
+              ResponseHeadersPolicyId: !Ref FilesResponseHeadersPolicy
+          - !Ref AWS::NoValue
         DefaultCacheBehavior:
           TargetOriginId: mcp-lambda
           ViewerProtocolPolicy: https-only
