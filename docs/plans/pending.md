@@ -35,10 +35,11 @@ Last updated: 2026-08-24 (post-v0.4.1).
 - [x] **M4b — file sharing** (released to prod as v0.4.1 on 2026-08-24;
   PRs #55-#63; live-verified: signed download 200, tampered/deleted 403).
   See [docs/files.md](../files.md).
-- **M5 — hardening** is the last milestone (see below).
-- **M5 — hardening**: alarms, budget, dashboard, `ReservedConcurrency`
-  (blocked on the quota above), external-link checking in docs CI,
-  `scripts/enroll-pricing-plan.sh` rewrite or removal.
+- [x] **M5 — hardening** (released to prod as **v1.0.0** on 2026-08-24;
+  PRs #66-#71). Alarms/budget/dashboard live, both drills executed with two
+  rotation defects found and fixed, subsystem guides published, reserved
+  concurrency active. **The PRD's build scope is complete.**
+
 
 ## Standing notes
 
