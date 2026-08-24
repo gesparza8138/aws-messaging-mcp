@@ -981,6 +981,97 @@ Resources:
       TreatMissingData: notBreaching
       AlarmActions: [!Ref AlarmTopic]
 
+  LambdaThrottlesAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub aws-messaging-mcp-${Stage}-lambda-throttles
+      AlarmDescription: Any Lambda throttle in a 5-minute window (PRD 13/S8).
+      Namespace: AWS/Lambda
+      MetricName: Throttles
+      Dimensions:
+        - { Name: FunctionName, Value: !Ref McpFunction }
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlarmTopic]
+
+  DynamoThrottlesAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub aws-messaging-mcp-${Stage}-ddb-throttles
+      AlarmDescription: Rate-limit counter table throttling; guardrails fail closed when it errors.
+      Namespace: AWS/DynamoDB
+      MetricName: ThrottledRequests
+      Dimensions:
+        - { Name: TableName, Value: !Ref RateLimitTable }
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlarmTopic]
+
+  # CloudFront metrics (5xx rate, BytesDownloaded) live only in us-east-1,
+  # so they appear on the dashboard as cross-region widgets rather than as
+  # alarms here (M5 finding); origin-side 5xx is covered by LambdaErrorsAlarm.
+  MonthlyBudget:
+    Type: AWS::Budgets::Budget
+    Condition: IsProd
+    Properties:
+      Budget:
+        BudgetName: aws-messaging-mcp-monthly
+        BudgetType: COST
+        TimeUnit: MONTHLY
+        BudgetLimit: { Amount: 10, Unit: USD }
+      NotificationsWithSubscribers:
+        - Notification:
+            NotificationType: ACTUAL
+            ComparisonOperator: GREATER_THAN
+            Threshold: 80
+            ThresholdType: PERCENTAGE
+          Subscribers:
+            - { SubscriptionType: EMAIL, Address: !Ref AlarmEmail }
+        - Notification:
+            NotificationType: FORECASTED
+            ComparisonOperator: GREATER_THAN
+            Threshold: 100
+            ThresholdType: PERCENTAGE
+          Subscribers:
+            - { SubscriptionType: EMAIL, Address: !Ref AlarmEmail }
+
+  Dashboard:
+    Type: AWS::CloudWatch::Dashboard
+    Properties:
+      DashboardName: !Sub aws-messaging-mcp-${Stage}
+      DashboardBody: !Sub |
+        {"widgets":[
+          {"type":"metric","x":0,"y":0,"width":8,"height":6,"properties":{
+            "title":"Lambda invocations and errors","region":"${AWS::Region}","stat":"Sum","period":300,
+            "metrics":[["AWS/Lambda","Invocations","FunctionName","${McpFunction}"],
+                       ["AWS/Lambda","Errors","FunctionName","${McpFunction}",{"color":"#d62728"}],
+                       ["AWS/Lambda","Throttles","FunctionName","${McpFunction}",{"color":"#ff7f0e"}]]}},
+          {"type":"metric","x":8,"y":0,"width":8,"height":6,"properties":{
+            "title":"Lambda duration p95 (ms)","region":"${AWS::Region}","stat":"p95","period":300,
+            "metrics":[["AWS/Lambda","Duration","FunctionName","${McpFunction}"]]}},
+          {"type":"metric","x":16,"y":0,"width":8,"height":6,"properties":{
+            "title":"Sends (SES account-level)","region":"${AWS::Region}","stat":"Sum","period":3600,
+            "metrics":[["AWS/SES","Send"],["AWS/SES","Delivery"],["AWS/SES","Bounce",{"color":"#d62728"}]]}},
+          {"type":"metric","x":0,"y":6,"width":8,"height":6,"properties":{
+            "title":"CloudFront requests and 5xx (global)","region":"us-east-1","stat":"Sum","period":3600,
+            "metrics":[["AWS/CloudFront","Requests","DistributionId","${Distribution}","Region","Global"],
+                       ["AWS/CloudFront","5xxErrorRate","DistributionId","${Distribution}","Region","Global",{"stat":"Average","yAxis":"right","color":"#d62728"}]]}},
+          {"type":"metric","x":8,"y":6,"width":8,"height":6,"properties":{
+            "title":"Files transfer (bytes, global)","region":"us-east-1","stat":"Sum","period":86400,
+            "metrics":[["AWS/CloudFront","BytesDownloaded","DistributionId","${Distribution}","Region","Global"]]}},
+          {"type":"metric","x":16,"y":6,"width":8,"height":6,"properties":{
+            "title":"Rate-limit table throttles","region":"${AWS::Region}","stat":"Sum","period":300,
+            "metrics":[["AWS/DynamoDB","ThrottledRequests","TableName","${RateLimitTable}"]]}}
+        ]}
+
 Outputs:
   McpUrl:
     Description: Canonical MCP endpoint for this stage.
