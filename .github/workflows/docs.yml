@@ -6,6 +6,11 @@ on:
   pull_request:
   push:
     branches: [main]
+  schedule:
+    # Weekly external-link sweep; kept off the PR path so rate-limit flakes
+    # never block merges (M5 §1.4).
+    - cron: "0 15 * * 1"
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -39,3 +44,15 @@ jobs:
         run: |
           docker run --rm -v "$PWD:/input" -w /input lycheeverse/lychee:0.24.2 \
             --offline --no-progress --root-dir /input "./**/*.md"
+
+  external-links:
+    name: external-links
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - name: lychee (external URLs)
+        run: |
+          docker run --rm -v "$PWD:/input" -w /input lycheeverse/lychee:0.24.2 \
+            --no-progress --root-dir /input --max-retries 2 \
+            --exclude "amazonses|awsapps|cloudfront-signed" "./**/*.md"
