@@ -7,5 +7,6 @@
   "RecipientAllowList=",
   "RateLimitPerHour=60",
   "RateLimitPerDay=300",
-  "FilesQuotaBytes=21474836480"
+  "FilesQuotaBytes=21474836480",
+  "ReservedConcurrency=5"
 ]

@@ -6,5 +6,6 @@
   "SesSenderAddresses=mcp-dev@gabriel-esparza.com",
   "RecipientAllowList=esparza.gabriel@gmail.com",
   "RateLimitPerHour=20",
-  "RateLimitPerDay=100"
+  "RateLimitPerDay=100",
+  "ReservedConcurrency=5"
 ]

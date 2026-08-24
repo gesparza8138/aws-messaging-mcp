@@ -28,7 +28,7 @@ Last updated: 2026-08-24 (post-v0.4.1).
 | SES production access | Support case `178750837400500` (follow-up answered 2026-08-23) | `aws sesv2 get-account --query ProductionAccessEnabled` | Sandbox lifts for both stages (per account-region, M2-1); no code change — prod's recipient allow-list is already off, dev keeps its guardrail. Update PRD R-table |
 | Toll-free carrier verification | Number `+18885777930`, id `phone-f6131eb3de7f4e6b96794acbdf4c6bec` | `aws pinpoint-sms-voice-v2 describe-phone-numbers` (Status → `ACTIVE`), `describe-registrations` | Texts stop being carrier-filtered; then request EUM production access (next row) |
 | EUM SMS production access (M3-6) | Request **after** carrier verification approves: Console → End User Messaging SMS → Account → *Request production access* | `aws pinpoint-sms-voice-v2 describe-account-attributes` (`ACCOUNT_TIER`) | Set the $20/month spend limit override (`set-text-message-spend-limit-override`); real sends reach unverified destinations; e2e sandbox skips become dead code to keep |
-| Lambda concurrency quota (10 → 1000) | Request `4f0d5b06db494d6f929549b2c783d2abI11zymJo` | `aws service-quotas get-requested-service-quota-change` | Set `ReservedConcurrency=5` in `infra/params/{dev,prod}.json` (PRD S8) and redeploy |
+| ~~Lambda concurrency quota~~ | **Granted 2026-08-24** (account limit now 1000) | — | `ReservedConcurrency=5` shipped in M5 PR D |
 
 ## Next milestones
 
