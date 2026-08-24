@@ -11,14 +11,30 @@
 set -euo pipefail
 
 REGION=us-west-2
-NEW_IP="" STAGES="dev prod"
+NEW_IP="" STAGES="dev prod" MODE=normal
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --ip) NEW_IP="$2"; shift 2 ;;
     --stages) STAGES="$2"; shift 2 ;;
+    --lockout) MODE=lockout; shift ;;
+    --restore) MODE=restore; shift ;;
     *) echo "unknown argument: $1" >&2; exit 1 ;;
   esac
 done
+
+# Incident levers (docs/runbooks/incident.md): --lockout swaps the WHOLE list
+# (Anthropic egress entries included) for loopback, saving it for --restore.
+if [[ "$MODE" == "lockout" ]]; then
+  CURRENT=$(aws ssm get-parameter --region "$REGION" --name /messaging-mcp/edge/allowed-cidrs --query Parameter.Value --output text)
+  aws ssm put-parameter --region "$REGION" --name /messaging-mcp/edge/pre-lockout-cidrs --type String --value "$CURRENT" --overwrite >/dev/null
+  aws ssm put-parameter --region "$REGION" --name /messaging-mcp/edge/allowed-cidrs --type String --value "127.0.0.1/32" --overwrite >/dev/null
+elif [[ "$MODE" == "restore" ]]; then
+  SAVED=$(aws ssm get-parameter --region "$REGION" --name /messaging-mcp/edge/pre-lockout-cidrs --query Parameter.Value --output text)
+  aws ssm put-parameter --region "$REGION" --name /messaging-mcp/edge/allowed-cidrs --type String --value "$SAVED" --overwrite >/dev/null
+fi
+if [[ "$MODE" != "normal" ]]; then
+  JOINED=$(aws ssm get-parameter --region "$REGION" --name /messaging-mcp/edge/allowed-cidrs --query Parameter.Value --output text)
+else
 [[ -n "$NEW_IP" ]] || NEW_IP=$(curl -s https://checkip.amazonaws.com)
 NEW_CIDR="${NEW_IP}/32"
 
@@ -37,6 +53,7 @@ JOINED=$(IFS=','; echo "${NEW_LIST[*]}")
 
 aws ssm put-parameter --region "$REGION" --name /messaging-mcp/edge/allowed-cidrs --type String --value "$JOINED" --overwrite >/dev/null
 aws ssm put-parameter --region "$REGION" --name /messaging-mcp/edge/home-ip --type String --value "$NEW_CIDR" --overwrite >/dev/null
+fi
 
 TMP=$(mktemp -d)
 for stage in $STAGES; do
