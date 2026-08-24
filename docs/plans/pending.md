@@ -2,7 +2,7 @@
 
 Living checklist of everything in flight or waiting on someone. Update it
 whenever an item lands (check it off with the date) or a new wait appears.
-Last updated: 2026-08-24.
+Last updated: 2026-08-24 (post-v0.4.1).
 
 ## Owner actions
 
@@ -32,8 +32,10 @@ Last updated: 2026-08-24.
 
 ## Next milestones
 
-- [x] **M4b — file sharing** (built 2026-08-24; PRs #55-#59 + docs; awaiting
-  the v0.4.0 release gate). See [docs/files.md](../files.md).
+- [x] **M4b — file sharing** (released to prod as v0.4.1 on 2026-08-24;
+  PRs #55-#63; live-verified: signed download 200, tampered/deleted 403).
+  See [docs/files.md](../files.md).
+- **M5 — hardening** is the last milestone (see below).
 - **M5 — hardening**: alarms, budget, dashboard, `ReservedConcurrency`
   (blocked on the quota above), external-link checking in docs CI,
   `scripts/enroll-pricing-plan.sh` rewrite or removal.
