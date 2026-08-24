@@ -40,7 +40,6 @@ Last updated: 2026-08-24 (post-v0.4.1).
   rotation defects found and fixed, subsystem guides published, reserved
   concurrency active. **The PRD's build scope is complete.**
 
-
 ## Standing notes
 
 - The `msg/rcs:send` Cognito scope stays defined but dormant (RCS descoped
