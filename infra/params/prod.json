@@ -6,5 +6,6 @@
   "SesSenderAddresses=mcp@gabriel-esparza.com",
   "RecipientAllowList=",
   "RateLimitPerHour=60",
-  "RateLimitPerDay=300"
+  "RateLimitPerDay=300",
+  "FilesQuotaBytes=21474836480"
 ]
