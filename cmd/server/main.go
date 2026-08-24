@@ -14,6 +14,7 @@ import (
 	"github.com/aws/aws-lambda-go/lambda"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/cloudwatch"
 	"github.com/aws/aws-sdk-go-v2/service/cloudwatchlogs"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/pinpointsmsvoicev2"
@@ -29,6 +30,7 @@ import (
 	"github.com/gesparza8138/aws-messaging-mcp/internal/lambdaadapter"
 	"github.com/gesparza8138/aws-messaging-mcp/internal/mcpserver"
 	"github.com/gesparza8138/aws-messaging-mcp/internal/settings"
+	"github.com/gesparza8138/aws-messaging-mcp/internal/signing"
 )
 
 func main() {
@@ -55,6 +57,22 @@ func main() {
 		deps.Media = s3.NewFromConfig(awsCfg)
 		deps.EventLog = cloudwatchlogs.NewFromConfig(awsCfg)
 	}
+	// Files tools register once the bucket and signing key are wired (M4b).
+	if s.FilesBucket != "" && s.FilesKeyPairID != "" {
+		pemData, err := fetchParameter(ctx, os.Getenv("FILES_SIGNING_KEY_PARAM"))
+		if err != nil {
+			log.Fatalf("files signing key parameter: %v", err)
+		}
+		key, err := signing.ParsePrivateKeyPEM([]byte(pemData))
+		if err != nil {
+			log.Fatalf("files signing key: %v", err)
+		}
+		s3Client := s3.NewFromConfig(awsCfg)
+		deps.Files = s3Client
+		deps.Presign = s3.NewPresignClient(s3Client)
+		deps.Metrics = cloudwatch.NewFromConfig(awsCfg)
+		deps.Signer = &signing.Signer{KeyPairID: s.FilesKeyPairID, PrivateKey: key}
+	}
 	if s.RateLimitTable != "" {
 		deps.Limiter = &guardrails.Limiter{
 			Store:   &awsclients.DynamoCounters{Client: dynamodb.NewFromConfig(awsCfg), Table: s.RateLimitTable},
@@ -69,11 +87,13 @@ func main() {
 	})
 
 	if os.Getenv("AWS_LAMBDA_RUNTIME_API") != "" {
-		// Tasks (scheduler invocations, M4b-1) are registered here as they
-		// land; the files-cleanup job arrives with the files tools.
+		tasks := map[string]lambdaadapter.TaskFunc{}
+		if deps.Files != nil {
+			tasks["files-cleanup"] = deps.CleanupFiles
+		}
 		lambda.Start((&lambdaadapter.Mux{
 			HTTP:  lambdaadapter.New(handler),
-			Tasks: map[string]lambdaadapter.TaskFunc{},
+			Tasks: tasks,
 		}).Invoke)
 		return
 	}

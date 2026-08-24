@@ -92,6 +92,20 @@ type Settings struct {
 	EUMEventsLogGroup string
 	// MediaMaxBytes caps the decoded size of an inline MediaUpload.
 	MediaMaxBytes int
+	// FilesBucket is the shared-downloads bucket behind CloudFront (M4b).
+	FilesBucket string
+	// FilesKeyPairID is the CloudFront public-key id trusted for /files/*.
+	FilesKeyPairID string
+	// FilesMaxExpiryDays bounds signed-link lifetimes (PRD §5.3).
+	FilesMaxExpiryDays int
+	// FilesMaxBodyBytes caps inline files_put_object bodies.
+	FilesMaxBodyBytes int64
+	// FilesMaxUploadBytes caps presigned uploads.
+	FilesMaxUploadBytes int64
+	// FilesQuotaBytes is the total-bucket backstop (0 disables).
+	FilesQuotaBytes int64
+	// AllowRiskyContentTypes bypasses the content-type deny-list (dev only).
+	AllowRiskyContentTypes bool
 }
 
 // JWKSURL returns the Cognito JWKS endpoint for the configured issuer.
@@ -141,6 +155,13 @@ func FromEnv(lookup Lookup) Settings {
 		MediaBucket:            get("MEDIA_BUCKET", ""),
 		EUMEventsLogGroup:      get("EUM_EVENTS_LOG_GROUP", ""),
 		MediaMaxBytes:          intOr(get("MEDIA_MAX_BYTES", ""), 5*1024*1024),
+		FilesBucket:            get("FILES_BUCKET", ""),
+		FilesKeyPairID:         get("FILES_KEY_PAIR_ID", ""),
+		FilesMaxExpiryDays:     intOr(get("FILES_MAX_EXPIRY_DAYS", ""), 365),
+		FilesMaxBodyBytes:      int64(intOr(get("FILES_MAX_BODY_BYTES", ""), 4*1024*1024)),
+		FilesMaxUploadBytes:    int64(intOr(get("FILES_MAX_UPLOAD_BYTES", ""), 500*1024*1024)),
+		FilesQuotaBytes:        int64(intOr(get("FILES_QUOTA_BYTES", ""), 0)),
+		AllowRiskyContentTypes: strings.EqualFold(get("ALLOW_RISKY_CONTENT_TYPES", "false"), "true"),
 		RateLimitTable:         get("RATE_LIMIT_TABLE", ""),
 	}
 }

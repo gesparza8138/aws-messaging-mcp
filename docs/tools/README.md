@@ -4,6 +4,11 @@
 
 | Tool | Description |
 | --- | --- |
+| [`files_create_signed_url`](files_create_signed_url.md) | Sign (or re-sign) a shared object into a CloudFront download link, optionally IP-restricted; requires msg/files:write. |
+| [`files_create_upload_url`](files_create_upload_url.md) | Presigned PUT URL for large files (≤500 MB, 15-minute validity); sign afterwards with files_create_signed_url; requires msg/files:write. |
+| [`files_delete_object`](files_delete_object.md) | Delete a shared object so its links immediately 403; requires msg/files:write. |
+| [`files_list_objects`](files_list_objects.md) | List shared objects with sizes and link expiries; requires msg/read. |
+| [`files_put_object`](files_put_object.md) | Upload an inline file (≤4 MB) and get back a CloudFront-signed download link; requires msg/files:write. Supports DryRun. |
 | [`hello`](hello.md) | Verify the full auth chain end to end; requires msg/read. |
 | [`ses_get_account`](ses_get_account.md) | SES account status: sandbox/production, quotas; requires msg/read. |
 | [`ses_list_email_identities`](ses_list_email_identities.md) | List verified SES sender identities; requires msg/read. |
