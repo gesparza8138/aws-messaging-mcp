@@ -103,7 +103,99 @@ aws sesv2 get-email-identity --email-identity gabriel-esparza.com --region us-we
 ```
 
 SES sandbox status is per account-region, shared by both stages; until AWS
-grants production access the account can only send to verified addresses.
+grants production access the account can only send to verified addresses
+(granted 2026-08-30).
+
+## 3d. Apex site stack (`infra/apex-site.yaml`, us-east-1, once)
+
+Gives `gabriel-esparza.com` a live web presence: an ACM cert (apex + `www` SAN),
+a CloudFront distribution whose viewer-request function 301s **every** request
+to `https://mcp.gabriel-esparza.com/`, and the apex `A`/`AAAA` aliases in the
+root zone ([dns.md](dns.md) §4). Toll-free carrier verification reviewers check
+the company URL, and the apex previously served nothing — which is why the first
+registration was denied. Certificates issue in minutes because the root zone is
+already live.
+
+Every deploy below needs the root zone id, which the stack takes as a parameter
+rather than importing:
+
+```bash
+ROOT_ZONE_ID=$(aws cloudformation describe-stacks \
+  --stack-name aws-messaging-mcp-root-dns --region us-east-1 \
+  --query 'Stacks[0].Outputs[?OutputKey==`RootZoneId`].OutputValue' --output text)
+```
+
+**Step 1 — staging rehearsal.** Deploy a throwaway instance on a subdomain
+first, so a mistake never takes the apex down:
+
+```bash
+aws cloudformation deploy \
+  --stack-name aws-messaging-mcp-apex-staging \
+  --template-file infra/apex-site.yaml \
+  --region us-east-1 \
+  --parameter-overrides DomainName=staging.gabriel-esparza.com \
+                        RootZoneId="$ROOT_ZONE_ID" \
+                        RedirectLocation=https://mcp.gabriel-esparza.com/ \
+  --no-execute-changeset
+# review the change set shown, then execute it:
+aws cloudformation execute-change-set --change-set-name <arn-from-above> --region us-east-1
+```
+
+Validate once the distribution has deployed (a few minutes):
+
+```bash
+curl -sI https://staging.gabriel-esparza.com/          # 301, Location: https://mcp.gabriel-esparza.com/
+curl -sI -L https://staging.gabriel-esparza.com/ | tail -n 20   # follows to 200
+```
+
+**Step 2 — free the apex record.** Update the root-dns stack, which drops its
+`ApexA` record and `SiteIpAddress` parameter; re-pass the `mcp` zone's four name
+servers from the edge stack outputs, since they are a stack parameter:
+
+```bash
+aws cloudformation deploy \
+  --stack-name aws-messaging-mcp-root-dns \
+  --template-file infra/root-dns.yaml \
+  --region us-east-1 \
+  --parameter-overrides McpZoneNameServers="<ns1,ns2,ns3,ns4>" \
+  --no-execute-changeset
+# review, execute
+```
+
+**Step 3 — prod.** Same template, the real hostnames. `SecondaryDomainName` only
+adds the cert SAN and the distribution alias; the `www` CNAME already exists in
+root-dns and chains to the apex alias:
+
+```bash
+aws cloudformation deploy \
+  --stack-name aws-messaging-mcp-apex \
+  --template-file infra/apex-site.yaml \
+  --region us-east-1 \
+  --parameter-overrides DomainName=gabriel-esparza.com \
+                        SecondaryDomainName=www.gabriel-esparza.com \
+                        RootZoneId="$ROOT_ZONE_ID" \
+                        RedirectLocation=https://mcp.gabriel-esparza.com/ \
+  --no-execute-changeset
+# review, execute
+```
+
+Validate, including that nothing else in the zone moved:
+
+```bash
+curl -sI https://gabriel-esparza.com/        # 301 -> https://mcp.gabriel-esparza.com/
+curl -sI https://www.gabriel-esparza.com/    # 301 -> same
+curl -so /dev/null -w '%{http_code}\n' -L https://gabriel-esparza.com/   # 200
+dig +short TXT gabriel-esparza.com           # SPF/DMARC/verification TXT unchanged
+```
+
+**Step 4 — tear down the rehearsal:**
+
+```bash
+aws cloudformation delete-stack --stack-name aws-messaging-mcp-apex-staging --region us-east-1
+```
+
+With the apex answering, resubmit the toll-free registration
+([`../plans/pending.md`](../plans/pending.md)).
 
 ## 4. App stack (`infra/app.yaml`)
 

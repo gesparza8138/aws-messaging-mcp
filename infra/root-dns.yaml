@@ -2,9 +2,10 @@ AWSTemplateFormatVersion: "2010-09-09"
 Description: >-
   Route 53 hosted zone for the root domain gabriel-esparza.com. DNS hosting
   for the whole domain moves here from GoDaddy (registration stays at
-  GoDaddy; only the nameservers change). Carries the pre-existing site and
-  mail records verbatim and delegates mcp.<domain> to the project zone the
-  edge stack owns. Deployed once, manually, like the edge stack.
+  GoDaddy; only the nameservers change). Delegates mcp.<domain> to the
+  project zone the edge stack owns and keeps the www CNAME; the apex A/AAAA
+  records belong to the apex-site stack, which 301s the apex to the mcp
+  landing page. Deployed once, manually, like the edge stack.
 
 Parameters:
   DomainName:
@@ -17,12 +18,6 @@ Parameters:
       The four name servers of the existing mcp.<domain> hosted zone
       (edge-stack output NameServers). Passed at deploy time so recreating
       the child zone never requires a template change.
-  SiteIpAddress:
-    Type: String
-    Default: 34.216.94.185
-    Description: >-
-      Pre-existing A record target for the apex and www (carried over from
-      GoDaddy so the move changes nothing). Delete the record when unwanted.
 
 Resources:
   RootZone:
@@ -45,16 +40,10 @@ Resources:
       TTL: "3600"
       ResourceRecords: !Ref McpZoneNameServers
 
-  ApexA:
-    Type: AWS::Route53::RecordSet
-    Properties:
-      HostedZoneId: !Ref RootZone
-      Name: !Ref DomainName
-      Type: A
-      TTL: "3600"
-      ResourceRecords:
-        - !Ref SiteIpAddress
-
+  # Deliberately still a CNAME to the apex, which chains to the apex-site
+  # stack's alias records. Converting it to an A alias in place would make
+  # CloudFormation create the A before deleting the CNAME, and Route 53
+  # rejects two record types on one name in a single change batch.
   WwwCname:
     Type: AWS::Route53::RecordSet
     Properties:

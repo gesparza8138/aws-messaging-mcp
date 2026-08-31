@@ -1,0 +1,172 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  aws-messaging-mcp apex redirect stack (us-east-1, because CloudFront can only
+  use an ACM certificate issued in us-east-1): a CloudFront distribution whose
+  viewer-request function answers every request with a 301 to the mcp landing
+  page, so the root domain resolves to a live company web presence for the
+  toll-free verification reviewers instead of serving nothing. Deployed once,
+  manually, like the edge stack (see docs/setup/deploy.md); instantiated twice -
+  a staging rehearsal on staging.<domain> and the real one on the apex.
+
+Parameters:
+  DomainName:
+    Type: String
+    Default: gabriel-esparza.com
+    Description: >-
+      Name the distribution serves and the Route 53 alias records point at
+      (staging.gabriel-esparza.com for the rehearsal instance).
+  SecondaryDomainName:
+    Type: String
+    Default: ""
+    Description: >-
+      Extra certificate SAN and CloudFront alias only - prod passes
+      www.<domain>. No Route 53 record is created for it: www already has a
+      CNAME to the apex in the root zone, which chains to the alias records
+      below. Empty for the staging instance.
+  RootZoneId:
+    Type: String
+    Description: >-
+      Route 53 hosted zone id of the root domain, from the
+      aws-messaging-mcp-root-dns stack output RootZoneId. Passed at deploy
+      time so no zone id is committed to this public repo.
+  RedirectLocation:
+    Type: String
+    Default: https://mcp.gabriel-esparza.com/
+    Description: Absolute URL every request is redirected to.
+
+Conditions:
+  HasSecondary: !Not [!Equals [!Ref SecondaryDomainName, ""]]
+
+Resources:
+  Certificate:
+    Type: AWS::CertificateManager::Certificate
+    Properties:
+      DomainName: !Ref DomainName
+      SubjectAlternativeNames: !If
+        - HasSecondary
+        - [!Ref SecondaryDomainName]
+        - !Ref AWS::NoValue
+      ValidationMethod: DNS
+      # Both names are listed here, unlike the edge stack's apex+wildcard pair:
+      # an apex and a www SAN get distinct validation CNAMEs, so CloudFormation
+      # writes two different records and Route 53 accepts the change batch.
+      DomainValidationOptions:
+        - DomainName: !Ref DomainName
+          HostedZoneId: !Ref RootZoneId
+        - !If
+          - HasSecondary
+          - DomainName: !Ref SecondaryDomainName
+            HostedZoneId: !Ref RootZoneId
+          - !Ref AWS::NoValue
+      KeyAlgorithm: RSA_2048
+
+  # The whole site. Every request is terminated at the edge with a 301, so
+  # there is no bucket, no Lambda, and no origin traffic.
+  RedirectFunction:
+    Type: AWS::CloudFront::Function
+    Properties:
+      # Function names are account-global and both stack instances coexist.
+      Name: !Sub "${AWS::StackName}-redirect"
+      AutoPublish: true
+      FunctionConfig:
+        Comment: !Sub "301 every request to ${RedirectLocation}"
+        Runtime: cloudfront-js-2.0
+      # Plain string concatenation only, like IpAllowListFunction: template
+      # literals would collide with the !Sub substitution syntax.
+      FunctionCode: !Sub |
+        function handler(event) {
+          return {
+            statusCode: 301,
+            statusDescription: 'Moved Permanently',
+            headers: {
+              'location': { value: '${RedirectLocation}' },
+              'cache-control': { value: 'public, max-age=3600' }
+            }
+          };
+        }
+
+  Distribution:
+    Type: AWS::CloudFront::Distribution
+    Metadata:
+      checkov:
+        skip:
+          - id: CKV_AWS_86
+            comment: Access logging buys nothing on a distribution that serves zero content and only 301s.
+          - id: CKV_AWS_68
+            comment: No WAF - this distribution is not subscribed to the flat-rate plan and a public 301-only redirect has no attack surface to filter.
+      cfn_nag:
+        rules_to_suppress:
+          - id: W10
+            reason: Access logging buys nothing on a 301-only redirect distribution serving zero content.
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        Comment: !Sub "${AWS::StackName}: 301 apex redirect to the mcp landing page"
+        HttpVersion: http2and3
+        IPV6Enabled: true
+        # Unlike app.yaml's distribution this one is NOT subscribed to the
+        # flat-rate WAF plan, so a restricted price class is allowed (the plan
+        # forbids one) and no WebACLId is attached.
+        PriceClass: PriceClass_100
+        Aliases: !If
+          - HasSecondary
+          - [!Ref DomainName, !Ref SecondaryDomainName]
+          - [!Ref DomainName]
+        ViewerCertificate:
+          AcmCertificateArn: !Ref Certificate
+          SslSupportMethod: sni-only
+          MinimumProtocolVersion: TLSv1.2_2021
+        # Placeholder: a distribution must declare an origin, but this one is
+        # never contacted because the viewer-request function returns a
+        # response for every request before the cache or origin is consulted.
+        Origins:
+          - Id: apex-placeholder
+            DomainName: mcp.gabriel-esparza.com
+            CustomOriginConfig:
+              OriginProtocolPolicy: https-only
+              OriginSSLProtocols: [TLSv1.2]
+        DefaultCacheBehavior:
+          TargetOriginId: apex-placeholder
+          # redirect-to-https, not https-only: a plain http:// visitor should
+          # land on the mcp page after one extra hop rather than see an error.
+          ViewerProtocolPolicy: redirect-to-https
+          AllowedMethods: [GET, HEAD]
+          CachedMethods: [GET, HEAD]
+          Compress: false
+          # Managed CachingDisabled, matching the rest of the repo; nothing
+          # reaches the cache anyway.
+          CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad
+          FunctionAssociations:
+            - EventType: viewer-request
+              FunctionARN: !GetAtt RedirectFunction.FunctionMetadata.FunctionARN
+
+  # Only the primary name gets records. www keeps its root-zone CNAME to the
+  # apex and chains into these.
+  ApexAliasA:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !Ref RootZoneId
+      Name: !Ref DomainName
+      Type: A
+      AliasTarget:
+        DNSName: !GetAtt Distribution.DomainName
+        # CloudFront's fixed alias hosted zone id, same as app.yaml DnsRecordA.
+        HostedZoneId: Z2FDTNDATAQYW2
+
+  ApexAliasAAAA:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !Ref RootZoneId
+      Name: !Ref DomainName
+      Type: AAAA
+      AliasTarget:
+        DNSName: !GetAtt Distribution.DomainName
+        HostedZoneId: Z2FDTNDATAQYW2
+
+Outputs:
+  DistributionDomainName:
+    Description: CloudFront domain the apex alias records point at.
+    Value: !GetAtt Distribution.DomainName
+  CertificateArn:
+    Description: ACM certificate covering the apex (and www on the prod instance).
+    Value: !Ref Certificate
