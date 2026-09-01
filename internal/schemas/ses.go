@@ -60,16 +60,24 @@ type Body struct {
 	HTML *Content `json:"Html,omitempty"`
 }
 
-// Attachment mirrors sesv2 Attachment (the caller-controlled subset).
+// Attachment mirrors sesv2 Attachment (the caller-controlled subset). SES
+// assembles the MIME itself, so INLINE + ContentId is the cheap way to embed
+// an image without hand-building a Raw message.
 type Attachment struct {
-	FileName    string `json:"FileName"`
-	ContentType string `json:"ContentType,omitempty"`
-	RawContent  string `json:"RawContent" jsonschema:"Attachment bytes, base64-encoded"`
+	FileName           string `json:"FileName"`
+	ContentType        string `json:"ContentType,omitempty"`
+	RawContent         string `json:"RawContent" jsonschema:"Attachment bytes, base64-encoded; decoded attachments and Raw content share the server budget (10 MB decoded by default), and SES caps the assembled message at 40 MB"`
+	ContentDescription string `json:"ContentDescription,omitempty" jsonschema:"Human-readable description of the attachment"`
+	ContentDisposition string `json:"ContentDisposition,omitempty" jsonschema:"Either ATTACHMENT (default) or INLINE; INLINE with ContentId lets HTML reference the image as <img src=\"cid:...\">. Case-sensitive."`
+	// ContentId keeps the SDK's spelling (not ContentID) because the contract
+	// test matches schema field names against the SDK struct by reflection.
+	ContentId               string `json:"ContentId,omitempty" jsonschema:"Content-ID the HTML body cites as cid:<value>; pair it with ContentDisposition INLINE"` //nolint:revive // SDK field name, see above
+	ContentTransferEncoding string `json:"ContentTransferEncoding,omitempty" jsonschema:"BASE64 (default), QUOTED_PRINTABLE, or SEVEN_BIT; case-sensitive"`
 }
 
 // RawMessage mirrors sesv2 RawMessage.
 type RawMessage struct {
-	Data string `json:"Data" jsonschema:"Complete MIME message, base64-encoded"`
+	Data string `json:"Data" jsonschema:"Complete MIME message, base64-encoded; shares the server budget with attachments (10 MB decoded by default), and SES caps the assembled message at 40 MB"`
 }
 
 // MessageTag mirrors sesv2 MessageTag.

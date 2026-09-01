@@ -2,11 +2,15 @@ package mcpserver
 
 import (
 	"context"
-	"encoding/base64"
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
+	"reflect"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/sesv2"
 	sestypes "github.com/aws/aws-sdk-go-v2/service/sesv2/types"
+	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/gesparza8138/aws-messaging-mcp/internal/auth"
@@ -16,10 +20,20 @@ import (
 	"github.com/gesparza8138/aws-messaging-mcp/internal/schemas"
 )
 
+// ContentDigest is a SHA-256 over one decoded binary part, so a client can
+// confirm the bytes the server received are the bytes it meant to send
+// (the DryRun echo re-encodes them, a digest does not).
+type ContentDigest struct {
+	Part   string `json:"part"`
+	Bytes  int    `json:"bytes"`
+	SHA256 string `json:"sha256"`
+}
+
 // ServerMetadata accompanies every send-tool result (PRD 5.1 rule 4).
 type ServerMetadata struct {
-	Guardrails []guardrails.Decision `json:"guardrails"`
-	DryRun     bool                  `json:"dry_run"`
+	Guardrails     []guardrails.Decision `json:"guardrails"`
+	DryRun         bool                  `json:"dry_run"`
+	ContentDigests []ContentDigest       `json:"content_digests,omitempty"`
 }
 
 // SendEmailOutput is the ses_send_email result.
@@ -27,6 +41,24 @@ type SendEmailOutput struct {
 	MessageID      string                `json:"MessageId,omitempty"`
 	WouldCall      *sesv2.SendEmailInput `json:"WouldCall,omitempty"`
 	ServerMetadata ServerMetadata        `json:"ServerMetadata"`
+}
+
+// sendEmailOutputSchema is the inferred SendEmailOutput schema with Go []byte
+// described as the base64 string encoding/json actually emits. Inference calls
+// a []byte an array, so the SDK validated its own DryRun echo (WouldCall's
+// Content.Raw.Data and Attachments[].RawContent) and failed the whole call —
+// any DryRun carrying binary content came back to the client as a JSON-RPC
+// error. Only this tool echoes []byte, so only this tool needs the override.
+func sendEmailOutputSchema() *jsonschema.Schema {
+	schema, err := jsonschema.For[SendEmailOutput](&jsonschema.ForOptions{
+		TypeSchemas: map[reflect.Type]*jsonschema.Schema{
+			reflect.TypeFor[[]byte](): {Types: []string{"null", "string"}},
+		},
+	})
+	if err != nil { // a type-shape error, not a runtime condition; AddTool panics on these too
+		panic("ses_send_email output schema: " + err.Error())
+	}
+	return schema
 }
 
 func (d Deps) sendEmail() mcp.ToolHandlerFor[schemas.SendEmailInput, SendEmailOutput] {
@@ -44,13 +76,29 @@ func (d Deps) sendEmail() mcp.ToolHandlerFor[schemas.SendEmailInput, SendEmailOu
 		recipients := in.Destination.All()
 		result.Add(guardrails.MaxRecipients(len(recipients), s.MaxRecipients))
 		result.Add(guardrails.RecipientsAllowed(recipients, s.RecipientAllowList))
+		// The guardrails decode the base64 payloads; the builder reuses the
+		// bytes instead of decoding them a second time.
+		var rawDecoded []byte
+		var attDecoded [][]byte
 		if in.Content.Raw != nil {
-			_, decisions := guardrails.RawEmail(in.Content.Raw.Data, s.EmailMaxRawBytes, s.SESSenderAddresses)
+			var decisions []guardrails.Decision
+			rawDecoded, decisions = guardrails.RawEmail(in.Content.Raw.Data, s.EmailMaxRawBytes, s.SESSenderAddresses)
 			for _, dec := range decisions {
 				result.Add(dec)
 			}
 		} else {
 			result.Add(guardrails.SenderAllowed(in.FromEmailAddress, s.SESSenderAddresses))
+			if len(in.Content.Simple.Attachments) > 0 {
+				atts := make([]guardrails.AttachmentInput, len(in.Content.Simple.Attachments))
+				for i, a := range in.Content.Simple.Attachments {
+					atts[i] = guardrails.AttachmentInput{FileName: a.FileName, RawContent: a.RawContent}
+				}
+				var decisions []guardrails.Decision
+				attDecoded, decisions = guardrails.EmailAttachments(atts, s.EmailMaxRawBytes)
+				for _, dec := range decisions {
+					result.Add(dec)
+				}
+			}
 		}
 		if d.Limiter != nil {
 			result.Add(d.Limiter.Check(ctx, "ses_send_email"))
@@ -63,7 +111,15 @@ func (d Deps) sendEmail() mcp.ToolHandlerFor[schemas.SendEmailInput, SendEmailOu
 			return res, SendEmailOutput{}, nil
 		}
 
-		call := buildSendEmail(in, s.SESConfigurationSet, s.SESReplyTo)
+		// Digested after the guardrails pass and before the DryRun fork, so a
+		// dry run and the real send report identical digests.
+		var atts []schemas.Attachment
+		if in.Content.Simple != nil {
+			atts = in.Content.Simple.Attachments
+		}
+		out.ServerMetadata.ContentDigests = contentDigests(rawDecoded, atts, attDecoded)
+
+		call := buildSendEmail(in, s.SESConfigurationSet, s.SESReplyTo, rawDecoded, attDecoded)
 		if in.DryRun {
 			out.WouldCall = call
 			return nil, out, nil
@@ -79,9 +135,36 @@ func (d Deps) sendEmail() mcp.ToolHandlerFor[schemas.SendEmailInput, SendEmailOu
 	}
 }
 
+// contentDigests hashes the decoded binary parts of one send: the raw MIME
+// message, or every attachment whose bytes decoded (attDecoded is index-aligned
+// with atts, nil where a decode failed). Simple Subject/Body text is left out
+// on purpose — it travels as plain JSON in the request, so digesting it would
+// only add noise. Returns nil when nothing binary was sent.
+func contentDigests(rawDecoded []byte, atts []schemas.Attachment, attDecoded [][]byte) []ContentDigest {
+	if rawDecoded != nil {
+		return []ContentDigest{digestOf("raw", rawDecoded)}
+	}
+	var digests []ContentDigest
+	for i, a := range atts {
+		if i >= len(attDecoded) || attDecoded[i] == nil {
+			continue
+		}
+		// Indexed as well as named because two attachments may share a FileName.
+		digests = append(digests, digestOf(fmt.Sprintf("attachment[%d]:%s", i, a.FileName), attDecoded[i]))
+	}
+	return digests
+}
+
+func digestOf(part string, decoded []byte) ContentDigest {
+	sum := sha256.Sum256(decoded)
+	return ContentDigest{Part: part, Bytes: len(decoded), SHA256: hex.EncodeToString(sum[:])}
+}
+
 // buildSendEmail maps the tool input onto the SDK input, injecting the
-// server-owned fields (PRD 5.1 rule 2).
-func buildSendEmail(in schemas.SendEmailInput, configurationSet, defaultReplyTo string) *sesv2.SendEmailInput {
+// server-owned fields (PRD 5.1 rule 2). rawDecoded and attDecoded are the
+// bytes the guardrails already decoded; attDecoded is index-aligned with the
+// Simple attachments.
+func buildSendEmail(in schemas.SendEmailInput, configurationSet, defaultReplyTo string, rawDecoded []byte, attDecoded [][]byte) *sesv2.SendEmailInput {
 	call := &sesv2.SendEmailInput{
 		FromEmailAddress: aws.String(in.FromEmailAddress),
 		Content:          &sestypes.EmailContent{},
@@ -108,8 +191,7 @@ func buildSendEmail(in schemas.SendEmailInput, configurationSet, defaultReplyTo 
 		})
 	}
 	if in.Content.Raw != nil {
-		raw, _ := base64.StdEncoding.DecodeString(in.Content.Raw.Data) // validated by guardrails
-		call.Content.Raw = &sestypes.RawMessage{Data: raw}
+		call.Content.Raw = &sestypes.RawMessage{Data: rawDecoded}
 		return call
 	}
 	simple := in.Content.Simple
@@ -126,11 +208,25 @@ func buildSendEmail(in schemas.SendEmailInput, configurationSet, defaultReplyTo 
 			msg.Body.Html = content(simple.Body.HTML)
 		}
 	}
-	for _, a := range simple.Attachments {
-		raw, _ := base64.StdEncoding.DecodeString(a.RawContent)
-		att := sestypes.Attachment{FileName: aws.String(a.FileName), RawContent: raw}
+	for i, a := range simple.Attachments {
+		att := sestypes.Attachment{FileName: aws.String(a.FileName)}
+		if i < len(attDecoded) {
+			att.RawContent = attDecoded[i]
+		}
 		if a.ContentType != "" {
 			att.ContentType = aws.String(a.ContentType)
+		}
+		if a.ContentDescription != "" {
+			att.ContentDescription = aws.String(a.ContentDescription)
+		}
+		if a.ContentDisposition != "" {
+			att.ContentDisposition = sestypes.AttachmentContentDisposition(a.ContentDisposition)
+		}
+		if a.ContentId != "" {
+			att.ContentId = aws.String(a.ContentId)
+		}
+		if a.ContentTransferEncoding != "" {
+			att.ContentTransferEncoding = sestypes.AttachmentContentTransferEncoding(a.ContentTransferEncoding)
 		}
 		msg.Attachments = append(msg.Attachments, att)
 	}

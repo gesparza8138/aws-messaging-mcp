@@ -57,13 +57,31 @@ sent, and the response carries `WouldCall` — the *exact* SDK input the real
 call would use, server-injected fields included. The EUM API's own `DryRun`
 field is server-controlled and never exposed.
 
+**`ServerMetadata.content_digests`** (`ses_send_email`): a SHA-256 and a
+decoded byte count for every binary part the server received — `part: "raw"`
+for a `Content.Raw` message, `part: "attachment[<i>]:<FileName>"` for each
+`Simple` attachment (indexed because two attachments may share a name).
+Text bodies are not digested; they arrive as plain JSON the caller can
+already read back. The digests are computed after the guardrails pass and
+before the `DryRun` fork, so a dry run and the real send of the same payload
+report identical values: hash locally, compare against the dry run to prove
+the bytes survived transit, then compare again on the real send. Absent when
+nothing binary was sent.
+
+> [!NOTE]
+> Prefer the digests to reading `WouldCall` back. A dry run echoes the whole
+> decoded payload re-encoded as base64 JSON, so a near-budget message can
+> exceed the Lambda Function URL's ~6 MB buffered response limit. That is
+> pre-existing behaviour for `Content.Raw`, not new, and it is exactly why
+> integrity is proved with a 64-character digest instead.
+
 ## The tools
 
 ### Email (SES)
 
 | Tool | Scope | Behaviour |
 | --- | --- | --- |
-| `ses_send_email` | `msg/email:send` | Mirrors `sesv2 SendEmail` (`Simple` or `Raw`, exactly one). Guardrails: sender allow-list (or the `From` inside raw MIME), recipient allow-list, max recipients, raw-size cap, rate limits. Injected: `ConfigurationSetName` (event trail), default `ReplyToAddresses` |
+| `ses_send_email` | `msg/email:send` | Mirrors `sesv2 SendEmail` (`Simple` or `Raw`, exactly one). Guardrails: sender allow-list (or the `From` inside raw MIME), recipient allow-list, max recipients, the raw ladder (`raw_base64` → `raw_size` → `raw_mime` → `sender_allow_list`, each stage its own decision), attachment decoding and combined size (`attachment_base64`, `attachment_size`, same `EMAIL_MAX_RAW_BYTES` budget), rate limits. Attachments may be `INLINE` with a `ContentId` for `cid:` images — SES assembles the MIME. `ServerMetadata.content_digests` hashes each binary part it received. Injected: `ConfigurationSetName` (event trail), default `ReplyToAddresses` |
 | `ses_list_email_identities` | `msg/read` | Verified sender identities |
 | `ses_get_account` | `msg/read` | Sandbox/production flag and quotas |
 

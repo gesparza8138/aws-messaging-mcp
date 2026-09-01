@@ -53,6 +53,32 @@ Presigned PUT URL for large files (≤500 MB, 15-minute validity); sign afterwar
     "ServerMetadata": {
       "additionalProperties": false,
       "properties": {
+        "content_digests": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "bytes": {
+                "type": "integer"
+              },
+              "part": {
+                "type": "string"
+              },
+              "sha256": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "part",
+              "bytes",
+              "sha256"
+            ],
+            "type": "object"
+          },
+          "type": [
+            "null",
+            "array"
+          ]
+        },
         "dry_run": {
           "type": "boolean"
         },

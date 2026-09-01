@@ -2,8 +2,11 @@ package mcpserver
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -136,6 +139,15 @@ func TestSendEmailGuardrailBlocks(t *testing.T) {
 			in.Destination.ToAddresses = []string{"owner@example.com", "owner@example.com", "owner@example.com"}
 		}, "max_recipients"},
 		{"no recipients", func(in *schemas.SendEmailInput) { in.Destination = nil }, "max_recipients"},
+		{"bad attachment base64", func(in *schemas.SendEmailInput) {
+			in.Content.Simple.Attachments = []schemas.Attachment{{FileName: "a.png", RawContent: "!!!not-base64"}}
+		}, "attachment_base64"},
+		{"oversize attachments", func(in *schemas.SendEmailInput) {
+			in.Content.Simple.Attachments = []schemas.Attachment{{
+				FileName:   "big.bin",
+				RawContent: base64.StdEncoding.EncodeToString(make([]byte, 2048)), // EmailMaxRawBytes is 1024 in tests
+			}}
+		}, "attachment_size"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -188,6 +200,106 @@ func TestSendEmailRawPath(t *testing.T) {
 	_, out, _ := testDeps(ses).sendEmail()(authedCtx("msg/email:send"), nil, in)
 	if out.MessageID != "msg-123" || ses.sendIn.Content.Raw == nil {
 		t.Fatalf("raw send failed: %+v", out)
+	}
+	if !strings.Contains(string(ses.sendIn.Content.Raw.Data), "Subject: s") {
+		t.Fatalf("guardrail-decoded MIME must reach the call: %q", ses.sendIn.Content.Raw.Data)
+	}
+}
+
+// sha256Hex is the expectation side of the digest tests: the same hash the
+// server should report, computed here straight from crypto/sha256.
+func sha256Hex(b []byte) string {
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
+}
+
+func attached(dryRun bool, atts ...schemas.Attachment) schemas.SendEmailInput {
+	in := simpleInput(dryRun)
+	in.Content.Simple.Attachments = atts
+	return in
+}
+
+func attachment(name string, body []byte) schemas.Attachment {
+	return schemas.Attachment{
+		FileName:    name,
+		ContentType: "application/octet-stream",
+		RawContent:  base64.StdEncoding.EncodeToString(body),
+	}
+}
+
+func TestSendEmailContentDigests(t *testing.T) {
+	png := []byte("\x89PNG not really a png")
+	pdf := []byte("%PDF-1.7 tiny")
+	mime := []byte("From: mcp-dev@example.com\r\nTo: owner@example.com\r\nSubject: s\r\n\r\nb\r\n")
+	rawIn := schemas.SendEmailInput{
+		FromEmailAddress: "mcp-dev@example.com",
+		Destination:      &schemas.Destination{ToAddresses: []string{"owner@example.com"}},
+		Content:          &schemas.EmailContent{Raw: &schemas.RawMessage{Data: base64.StdEncoding.EncodeToString(mime)}},
+		DryRun:           true,
+	}
+	cases := []struct {
+		name string
+		in   schemas.SendEmailInput
+		want []ContentDigest
+	}{
+		{"text only has no binary part", simpleInput(true), nil},
+		{"one attachment", attached(true, attachment("logo.png", png)), []ContentDigest{
+			{Part: "attachment[0]:logo.png", Bytes: len(png), SHA256: sha256Hex(png)},
+		}},
+		{"shared file name stays distinct", attached(true, attachment("logo.png", png), attachment("logo.png", pdf)), []ContentDigest{
+			{Part: "attachment[0]:logo.png", Bytes: len(png), SHA256: sha256Hex(png)},
+			{Part: "attachment[1]:logo.png", Bytes: len(pdf), SHA256: sha256Hex(pdf)},
+		}},
+		{"raw message", rawIn, []ContentDigest{{Part: "raw", Bytes: len(mime), SHA256: sha256Hex(mime)}}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, out, _ := testDeps(&fakeSES{}).sendEmail()(authedCtx("msg/email:send"), nil, tc.in)
+			if out.WouldCall == nil {
+				t.Fatalf("dry run must echo the call: %+v", out)
+			}
+			if !reflect.DeepEqual(out.ServerMetadata.ContentDigests, tc.want) {
+				t.Fatalf("digests: %+v want %+v", out.ServerMetadata.ContentDigests, tc.want)
+			}
+		})
+	}
+}
+
+func TestSendEmailDigestsOnRealSendNotOnBlocked(t *testing.T) {
+	body := []byte("report bytes")
+	ses := &fakeSES{}
+	_, out, _ := testDeps(ses).sendEmail()(authedCtx("msg/email:send"), nil, attached(false, attachment("report.pdf", body)))
+	if out.MessageID != "msg-123" || ses.sendIn == nil {
+		t.Fatalf("send failed: %+v", out)
+	}
+	want := []ContentDigest{{Part: "attachment[0]:report.pdf", Bytes: len(body), SHA256: sha256Hex(body)}}
+	if !reflect.DeepEqual(out.ServerMetadata.ContentDigests, want) {
+		t.Fatalf("real send digests: %+v want %+v", out.ServerMetadata.ContentDigests, want)
+	}
+
+	// Blocked calls stop before the digest step, so the error metadata carries
+	// decisions only.
+	blocked := attached(false, attachment("report.pdf", body))
+	blocked.FromEmailAddress = "evil@x.com"
+	res, _, _ := testDeps(&fakeSES{}).sendEmail()(authedCtx("msg/email:send"), nil, blocked)
+	if res == nil || !res.IsError {
+		t.Fatalf("expected a guardrail error: %+v", res)
+	}
+	if meta := res.StructuredContent.(SendEmailOutput).ServerMetadata; meta.ContentDigests != nil {
+		t.Fatalf("blocked call must not report digests: %+v", meta)
+	}
+}
+
+// A failed decode blocks before the digest step, so this defensive skip is
+// only reachable by calling the helper directly.
+func TestContentDigestsSkipUndecodedAttachments(t *testing.T) {
+	atts := []schemas.Attachment{{FileName: "bad.png"}, {FileName: "ok.txt"}}
+	want := []ContentDigest{{Part: "attachment[1]:ok.txt", Bytes: 2, SHA256: sha256Hex([]byte("ok"))}}
+	if got := contentDigests(nil, atts, [][]byte{nil, []byte("ok")}); !reflect.DeepEqual(got, want) {
+		t.Fatalf("digests: %+v want %+v", got, want)
+	}
+	if got := contentDigests(nil, atts, nil); got != nil {
+		t.Fatalf("no decoded bytes must digest nothing: %+v", got)
 	}
 }
 
@@ -250,16 +362,60 @@ func TestListIdentitiesAndGetAccount(t *testing.T) {
 func TestBuildSendEmailCharsetsAndAttachments(t *testing.T) {
 	in := simpleInput(false)
 	in.Content.Simple.Subject.Charset = "UTF-8"
-	in.Content.Simple.Body.HTML = &schemas.Content{Data: "<b>hi</b>", Charset: "UTF-8"}
-	in.Content.Simple.Attachments = []schemas.Attachment{{FileName: "a.pdf", ContentType: "application/pdf", RawContent: base64.StdEncoding.EncodeToString([]byte("pdf"))}}
-	call := buildSendEmail(in, "", "")
+	in.Content.Simple.Body.HTML = &schemas.Content{Data: `<img src="cid:logo">`, Charset: "UTF-8"}
+	in.Content.Simple.Attachments = []schemas.Attachment{{
+		FileName:                "logo.png",
+		ContentType:             "image/png",
+		RawContent:              base64.StdEncoding.EncodeToString([]byte("png")),
+		ContentDescription:      "the logo",
+		ContentDisposition:      "INLINE",
+		ContentId:               "logo",
+		ContentTransferEncoding: "BASE64",
+	}}
+	call := buildSendEmail(in, "", "", nil, [][]byte{[]byte("png")})
 	if aws.ToString(call.Content.Simple.Subject.Charset) != "UTF-8" || call.Content.Simple.Body.Html == nil {
 		t.Fatalf("charset/html: %+v", call.Content.Simple)
 	}
-	if len(call.Content.Simple.Attachments) != 1 || aws.ToString(call.Content.Simple.Attachments[0].ContentType) != "application/pdf" {
+	if len(call.Content.Simple.Attachments) != 1 {
 		t.Fatalf("attachments: %+v", call.Content.Simple.Attachments)
+	}
+	att := call.Content.Simple.Attachments[0]
+	if aws.ToString(att.ContentType) != "image/png" || string(att.RawContent) != "png" {
+		t.Fatalf("attachment bytes/type: %+v", att)
+	}
+	if att.ContentDisposition != sestypes.AttachmentContentDispositionInline || aws.ToString(att.ContentId) != "logo" {
+		t.Fatalf("inline disposition/cid: %+v", att)
+	}
+	if att.ContentTransferEncoding != sestypes.AttachmentContentTransferEncodingBase64 || aws.ToString(att.ContentDescription) != "the logo" {
+		t.Fatalf("transfer encoding/description: %+v", att)
 	}
 	if call.ConfigurationSetName != nil || call.ReplyToAddresses != nil {
 		t.Fatalf("empty injections must stay unset: %+v", call)
+	}
+}
+
+func TestSendEmailInlineAttachmentThroughGuardrails(t *testing.T) {
+	ses := &fakeSES{}
+	in := simpleInput(true)
+	in.Content.Simple.Attachments = []schemas.Attachment{{
+		FileName:           "logo.png",
+		ContentType:        "image/png",
+		RawContent:         base64.StdEncoding.EncodeToString([]byte("png")),
+		ContentDisposition: "INLINE",
+		ContentId:          "logo",
+	}}
+	_, out, _ := testDeps(ses).sendEmail()(authedCtx("msg/email:send"), nil, in)
+	if out.WouldCall == nil || len(out.WouldCall.Content.Simple.Attachments) != 1 {
+		t.Fatalf("would-call attachments: %+v", out.WouldCall)
+	}
+	if string(out.WouldCall.Content.Simple.Attachments[0].RawContent) != "png" {
+		t.Fatalf("guardrail-decoded bytes must reach the call: %+v", out.WouldCall.Content.Simple.Attachments[0])
+	}
+	var sized bool
+	for _, d := range out.ServerMetadata.Guardrails {
+		sized = sized || (d.Name == "attachment_size" && d.Allowed)
+	}
+	if !sized {
+		t.Fatalf("attachment_size decision missing: %+v", out.ServerMetadata.Guardrails)
 	}
 }
