@@ -108,6 +108,9 @@ func (e env) session(ctx context.Context, t *testing.T) *mcp.ClientSession {
 
 func structured(t *testing.T, r *mcp.CallToolResult) map[string]any {
 	t.Helper()
+	if r == nil {
+		t.Fatal("no result to read structured content from (the call itself failed)")
+	}
 	raw, err := json.Marshal(r.StructuredContent)
 	if err != nil {
 		t.Fatal(err)
@@ -119,7 +122,14 @@ func structured(t *testing.T, r *mcp.CallToolResult) map[string]any {
 	return out
 }
 
+// text is called from t.Fatalf argument lists, including ones reporting a
+// transport error, where CallTool returns a nil result. Dereferencing that
+// panicked and buried the actual error under a SIGSEGV stack, so a nil result
+// reports itself instead.
 func text(r *mcp.CallToolResult) string {
+	if r == nil {
+		return "<no result>"
+	}
 	for _, c := range r.Content {
 		if tc, ok := c.(*mcp.TextContent); ok {
 			return tc.Text
