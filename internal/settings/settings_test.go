@@ -108,3 +108,16 @@ func TestIntOr(t *testing.T) {
 		t.Fatalf("empty must fall back: %d", s.EmailMaxRawBytes)
 	}
 }
+
+// The API is called with the ARN so authorization resolves the phone-number
+// resource the SendSms policy names; an E.164 string does not, and every send
+// was denied for the action rather than for the resource.
+func TestSendingIdentityPrefersTheARN(t *testing.T) {
+	arn := "arn:aws:sms-voice:us-west-2:1:phone-number/phone-abc"
+	if got := (Settings{OriginationIdentity: "+18885550000", OriginationIdentityARN: arn}).SendingIdentity(); got != arn {
+		t.Fatalf("SendingIdentity() = %q, want the ARN", got)
+	}
+	if got := (Settings{OriginationIdentity: "+18885550000"}).SendingIdentity(); got != "+18885550000" {
+		t.Fatalf("with no ARN configured it falls back to the number: %q", got)
+	}
+}

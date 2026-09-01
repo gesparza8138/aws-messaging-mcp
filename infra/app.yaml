@@ -788,8 +788,14 @@ Resources:
           SES_REPLY_TO: !Ref SesReplyTo
           OPT_IN_PHONE_NUMBER: !Ref OptInPhoneNumber
           EUM_CONFIGURATION_SET: !Ref EumConfigurationSet
-          # The public opt-in page shows the same number the server sends from.
+          # The public opt-in page shows the same number the server sends from,
+          # and it is the value a caller names in OriginationIdentity.
           ORIGINATION_IDENTITY: !Ref OptInPhoneNumber
+          # ...but the API is called with the ARN. An E.164 string does not
+          # resolve to the phone-number resource during authorization, so the
+          # least-privilege SendSms grant below never matches it and every send
+          # is denied.
+          ORIGINATION_IDENTITY_ARN: !Ref OriginationPhoneArn
           PROTECT_CONFIGURATION_ID: !Ref ProtectConfigurationId
           SMS_MAX_PRICE: !Ref SmsMaxPrice
           MEDIA_BUCKET: !Ref MediaBucket

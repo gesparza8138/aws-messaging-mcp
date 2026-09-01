@@ -74,7 +74,7 @@ func (d Deps) sendTextMessage() mcp.ToolHandlerFor[schemas.SendTextMessageInput,
 func buildSendText(in schemas.SendTextMessageInput, s settings.Settings, price string) *pinpointsmsvoicev2.SendTextMessageInput {
 	call := &pinpointsmsvoicev2.SendTextMessageInput{
 		DestinationPhoneNumber: aws.String(in.DestinationPhoneNumber),
-		OriginationIdentity:    aws.String(s.OriginationIdentity),
+		OriginationIdentity:    aws.String(s.SendingIdentity()),
 		MessageBody:            aws.String(in.MessageBody),
 		MaxPrice:               aws.String(price),
 		MessageType:            eumtypes.MessageTypeTransactional,
@@ -191,7 +191,7 @@ func mediaKey(fileName string) string {
 func buildSendMedia(in schemas.SendMediaMessageInput, s settings.Settings, price string, mediaURLs []string) *pinpointsmsvoicev2.SendMediaMessageInput {
 	call := &pinpointsmsvoicev2.SendMediaMessageInput{
 		DestinationPhoneNumber: aws.String(in.DestinationPhoneNumber),
-		OriginationIdentity:    aws.String(s.OriginationIdentity),
+		OriginationIdentity:    aws.String(s.SendingIdentity()),
 		MediaUrls:              mediaURLs,
 		MaxPrice:               aws.String(price),
 	}
