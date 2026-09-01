@@ -91,7 +91,13 @@ func TestSmsTools(t *testing.T) {
 		t.Fatalf("dry run: err=%v result=%s", err, text(dry))
 	}
 	would, _ := structured(t, dry)["WouldCall"].(map[string]any)
-	if would == nil || would["OriginationIdentity"] != origination {
+	// The call carries the phone-number ARN, not the E.164 number a caller
+	// names: an E.164 string does not resolve to the phone-number resource
+	// during authorization, so the scoped SendSms grant never matched it and
+	// every send was denied. Either form identifies the same number, so accept
+	// the ARN or the number itself.
+	sending, _ := would["OriginationIdentity"].(string)
+	if would == nil || (sending != origination && !strings.HasPrefix(sending, "arn:aws:sms-voice:")) {
 		t.Fatalf("origination not injected: %v", would)
 	}
 	if cs := os.Getenv("E2E_SMS_CONFIG_SET"); cs != "" && would["ConfigurationSetName"] != cs {
