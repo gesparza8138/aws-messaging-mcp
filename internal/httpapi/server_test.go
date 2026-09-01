@@ -153,6 +153,8 @@ func TestOriginSecretEnforced(t *testing.T) {
 func TestPublicPages(t *testing.T) {
 	f := newFixture(t, metadataDirect)
 	for path, want := range map[string]string{"/": "/opt-in", "/opt-in": "our toll-free number"} {
+		// The unconfigured fixture proves both contact lines degrade away
+		// rather than rendering an empty mailto: or a bare "sent from".
 		resp := f.do(t, http.MethodGet, path, "", "")
 		body, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
@@ -166,6 +168,44 @@ func TestPublicPages(t *testing.T) {
 	// Unknown root-adjacent paths still require auth ("/" must not swallow them).
 	if resp := f.do(t, http.MethodGet, "/anything", "", ""); resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("/anything: %d, want 401", resp.StatusCode)
+	}
+}
+
+// The landing page carries the contact details the toll-free verification
+// reviewers cross-check against the registration: the support email and the
+// sending number, both from settings so they cannot drift from what the
+// server uses. The number is described as send-only because the toll-free
+// has no voice capability.
+func TestLandingPageContactDetails(t *testing.T) {
+	f := newFixture(t, metadataDirect)
+	cfg := f.cfg
+	cfg.SESReplyTo = "owner@example.com"
+	cfg.OptInPhoneNumber = "+18885550000"
+	handler := httpapi.NewHandler(httpapi.Config{
+		Settings: cfg,
+		Verifier: auth.NewVerifier(issuer, []string{clientID}, f.keys.Provider()),
+		MCP:      mcpserver.NewHandler(mcpserver.Deps{Settings: cfg, SES: stubSES{}}),
+	})
+	srv := httptest.NewServer(handler)
+	defer srv.Close()
+
+	req, _ := http.NewRequest(http.MethodGet, srv.URL+"/", nil)
+	req.Header.Set("X-Origin-Secret", cfg.OriginSecret)
+	resp, err := srv.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	for _, want := range []string{
+		"owner@example.com",
+		`mailto:owner@example.com`,
+		"+18885550000",
+		"does not accept voice calls",
+	} {
+		if !strings.Contains(string(body), want) {
+			t.Fatalf("landing page lacks %q:\n%s", want, body)
+		}
 	}
 }
 
