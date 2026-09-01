@@ -9,7 +9,7 @@
 > in the Route 53 root zone instead of GoDaddy. The single remaining GoDaddy
 > action, ever, is pointing the domain's nameservers at the root zone.
 
-The domain `gabriel-esparza.com` is registered at GoDaddy. Everything under `mcp.gabriel-esparza.com` is managed by CloudFormation via the edge stack's child zone; the root zone (`infra/root-dns.yaml`) carries the pre-existing site/mail records and the `mcp` delegation.
+The domain `gabriel-esparza.com` is registered at GoDaddy. Everything under `mcp.gabriel-esparza.com` is managed by CloudFormation via the edge stack's child zone; the root zone (`infra/root-dns.yaml`) carries the pre-existing mail records, the `www` CNAME and the `mcp` delegation, and it holds the apex alias records written by the `apex-site` stack (§4).
 
 | Name | Purpose | Stage |
 | --- | --- | --- |
@@ -44,26 +44,48 @@ The root zone already carries the domain's pre-existing records (site `A`,
 `www`, GoDaddy-mail `MX`) plus the `mcp` NS delegation, so nothing visibly
 changes except who serves the DNS.
 
+> [!NOTE]
+> **Updated 2026-08-30:** the legacy site `A` record (the GoDaddy-era IP, which
+> answered on neither port 80 nor 443) has been removed from the root zone,
+> along with its `SiteIpAddress` parameter. The apex is now an alias to the
+> `apex-site` stack's CloudFront distribution, which 301-redirects every request
+> to `https://mcp.gabriel-esparza.com/`. It exists so that toll-free carrier
+> verification reviewers find a live web presence at the company URL — the first
+> registration was denied for "Company Verification Failed" (§4,
+> [`../plans/pending.md`](../plans/pending.md)). The `www` CNAME is unchanged and
+> now chains to that alias.
+
 Verify after propagation (registrar changes can take up to an hour):
 
 ```bash
 dig +short NS gabriel-esparza.com @8.8.8.8       # the four root-zone awsdns servers
 dig +short NS mcp.gabriel-esparza.com @8.8.8.8   # the four child-zone awsdns servers
-dig +short A gabriel-esparza.com @8.8.8.8        # unchanged site IP
+dig +short A gabriel-esparza.com @8.8.8.8        # apex redirect distribution (was the site IP)
 ```
 
 ## 3. Certificates
 
 `AWS::CertificateManager::Certificate` in the `edge` stack (region `us-east-1`, required by CloudFront) requests a cert for `mcp.gabriel-esparza.com` with SAN `*.mcp.gabriel-esparza.com`, using **DNS validation** with `HostedZoneId` pointing at the delegated zone, so CloudFormation writes the validation CNAME itself and the stack waits until issued. Nothing to do at GoDaddy.
 
+`infra/apex-site.yaml` (also `us-east-1`) requests a second certificate the same way — `gabriel-esparza.com` with SAN `www.gabriel-esparza.com`, validated into the **root** zone via its `RootZoneId` parameter. Because the zone is already live, issuance takes minutes.
+
 ## 4. Records CloudFormation manages
 
 | Record | Type | Target | Stack |
 | --- | --- | --- | --- |
+| `gabriel-esparza.com` | A + AAAA alias | apex redirect distribution (301 → `https://mcp.gabriel-esparza.com/`) | apex-site |
+| `_<token>.gabriel-esparza.com` | CNAME | ACM validation, apex cert (apex + `www` SAN) | apex-site |
+| `www.gabriel-esparza.com` | CNAME | `gabriel-esparza.com` — unchanged, now chains to the apex alias | root-dns |
 | `mcp.gabriel-esparza.com` | A + AAAA alias | prod CloudFront distribution | app (prod) |
 | `dev.mcp.gabriel-esparza.com` | A + AAAA alias | dev CloudFront distribution | app (dev) |
 | `_<token>.mcp.gabriel-esparza.com` | CNAME | ACM validation | edge |
 | `auth.mcp.gabriel-esparza.com` | A alias | Cognito custom domain CloudFront | app (prod), optional |
+
+The apex distribution serves no content of its own: a viewer-request CloudFront
+Function 301s **every** request to the `mcp` landing page. It exists because
+toll-free carrier verification reviewers check the company URL for a live web
+presence, and the apex previously answered nothing. Deploy steps are in
+[`deploy.md`](deploy.md) §3d.
 
 ## 5. Email sender domain (SES) — decision needed
 

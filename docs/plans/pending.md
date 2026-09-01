@@ -2,7 +2,7 @@
 
 Living checklist of everything in flight or waiting on someone. Update it
 whenever an item lands (check it off with the date) or a new wait appears.
-Last updated: 2026-08-24 (post-v0.4.1).
+Last updated: 2026-08-30 (post-apex-site).
 
 ## Owner actions
 
@@ -11,6 +11,11 @@ Last updated: 2026-08-24 (post-v0.4.1).
   opt-in screenshot attached, number associated). Carrier review 1–2 weeks.
 - [x] **`E2E_TEST_PHONE` secret** — set 2026-08-24; the owner number rides
   into dev's recipient allow-list at deploy time.
+- [ ] **Resubmit the toll-free registration** — once the apex redirect is live,
+  correct the company fields (URL now resolves) and submit a new version:
+  `aws pinpoint-sms-voice-v2 submit-registration-version --registration-id
+  registration-ef01565f27874d13acf093e2ca98fea8`. Denied 2026-08-25 for
+  "Company Verification Failed".
 - [ ] **Verify the owner handset against the EUM sandbox** — blocked until
   the toll-free number is `ACTIVE` (the OTP text needs an origination
   identity; record `vdn-6580cbf9c59340f293761c2809f18efe` is created and the
@@ -20,8 +25,8 @@ Last updated: 2026-08-24 (post-v0.4.1).
 
 | Wait | Tracking | Poll | When it lands |
 | --- | --- | --- | --- |
-| SES production access | Support case `178750837400500` (follow-up answered 2026-08-23) | `aws sesv2 get-account --query ProductionAccessEnabled` | Sandbox lifts for both stages (per account-region, M2-1); no code change — prod's recipient allow-list is already off, dev keeps its guardrail. Update PRD R-table |
-| Toll-free carrier verification | Number `+18885777930`, id `phone-f6131eb3de7f4e6b96794acbdf4c6bec` | `aws pinpoint-sms-voice-v2 describe-phone-numbers` (Status → `ACTIVE`), `describe-registrations` | Texts stop being carrier-filtered; then request EUM production access (next row) |
+| ~~SES production access~~ | **Granted 2026-08-30** (case `178750837400500`; `ProductionAccessEnabled` true) | — | Sandbox lifted for both stages; no code change was needed — prod's recipient allow-list was already off, dev keeps its guardrail. PRD prerequisite updated |
+| Toll-free carrier verification | **Denied 2026-08-25** — registration `registration-ef01565f27874d13acf093e2ca98fea8` is `REQUIRES_UPDATES`, reason "Company Verification Failed" (company contact/email/address/URL unverifiable against official records). Number `+18885777930`, id `phone-f6131eb3de7f4e6b96794acbdf4c6bec` | `aws pinpoint-sms-voice-v2 describe-registrations`, `describe-phone-numbers` (Status → `ACTIVE`) | Fix in flight: the apex `gabriel-esparza.com` served nothing, so the company URL could not be checked — the `apex-site` stack now 301s it to the mcp landing page ([../setup/deploy.md](../setup/deploy.md) §3d). Resubmission pending; then texts stop being carrier-filtered and EUM production access can be requested (next row) |
 | EUM SMS production access (M3-6) | Request **after** carrier verification approves: Console → End User Messaging SMS → Account → *Request production access* | `aws pinpoint-sms-voice-v2 describe-account-attributes` (`ACCOUNT_TIER`) | Set the $20/month spend limit override (`set-text-message-spend-limit-override`); real sends reach unverified destinations; e2e sandbox skips become dead code to keep |
 | ~~Lambda concurrency quota~~ | **Granted 2026-08-24** (account limit now 1000) | — | `ReservedConcurrency=5` shipped in M5 PR D |
 
