@@ -50,9 +50,12 @@ Last updated: 2026-09-01 (inline-CID correction).
 - [ ] **Inline (CID) images do not actually render** — exposing the SDK's
   `ContentDisposition`/`ContentId` fields was not enough: SES assembles
   `Simple` attachments under `multipart/mixed`, so the `cid:` reference never
-  resolves and the image lands as an ordinary attachment. Docs, the tool
-  description, and a non-blocking `inline_not_rendered` decision are corrected
-  now; server-side `multipart/related` assembly is planned in
+  resolves and the image lands as an ordinary attachment. The server now
+  assembles the `multipart/related` itself and sends it as `Content.Raw`
+  (PR C), which is a breaking change to the `DryRun` echo for those sends.
+  Remaining: the owner opening a real inline send in Gmail, Apple Mail, and
+  Outlook (the actual acceptance criterion), then `ServerMetadata.mime_structure`
+  (PR D) and `Content.Raw.DataKey` (PR E) in
   [email-inline-mime.md](email-inline-mime.md).
 
 ## Standing notes

@@ -59,8 +59,11 @@ field is server-controlled and never exposed.
 
 **`ServerMetadata.content_digests`** (`ses_send_email`): a SHA-256 and a
 decoded byte count for every binary part the server received — `part: "raw"`
-for a `Content.Raw` message, `part: "attachment[<i>]:<FileName>"` for each
-`Simple` attachment (indexed because two attachments may share a name).
+for a caller-supplied `Content.Raw` message, `part: "attachment[<i>]:<FileName>"`
+for each `Simple` attachment (indexed because two attachments may share a
+name), and `part: "assembled"` for the whole message when the server built one
+for an inline send, alongside the per-attachment digests rather than instead
+of them.
 Text bodies are not digested; they arrive as plain JSON the caller can
 already read back. The digests are computed after the guardrails pass and
 before the `DryRun` fork, so a dry run and the real send of the same payload
@@ -73,7 +76,10 @@ nothing binary was sent.
 > decoded payload re-encoded as base64 JSON, so a near-budget message can
 > exceed the Lambda Function URL's ~6 MB buffered response limit. That is
 > pre-existing behaviour for `Content.Raw`, not new, and it is exactly why
-> integrity is proved with a 64-character digest instead.
+> integrity is proved with a 64-character digest instead. An inline send
+> echoes more still: the assembled message re-encodes every attachment as
+> base64 inside the MIME, and then the whole of it as base64 again for
+> `Content.Raw.Data`.
 
 ## The tools
 
@@ -81,7 +87,7 @@ nothing binary was sent.
 
 | Tool | Scope | Behaviour |
 | --- | --- | --- |
-| `ses_send_email` | `msg/email:send` | Mirrors `sesv2 SendEmail` (`Simple` or `Raw`, exactly one). Guardrails: sender allow-list (or the `From` inside raw MIME), recipient allow-list, max recipients, the raw ladder (`raw_base64` → `raw_size` → `raw_mime` → `sender_allow_list`, each stage its own decision), attachment decoding and combined size (`attachment_base64`, `attachment_size`, same `EMAIL_MAX_RAW_BYTES` budget), rate limits. `ContentDisposition: INLINE` with a `ContentId` is accepted and delivered but does **not** render as a `cid:` image: SES assembles `Simple` attachments under `multipart/mixed`, never the `multipart/related` a `cid:` reference needs, so the image arrives as an ordinary attachment — the non-blocking `inline_not_rendered` decision says so, `Content.Raw` with a hand-built `multipart/related` is the path that works today, and server-side assembly is planned ([plan](plans/email-inline-mime.md)). An attachment may carry `RawContentKey` (a `shared/…` files-bucket key) instead of `RawContent`, and the server reads those bytes itself; that path also requires `msg/read` (it is a files-store read), refuses keys outside `shared/` and objects past their expiry, and checks the object's size before downloading it. `ServerMetadata.content_digests` hashes each binary part it received. Injected: `ConfigurationSetName` (event trail), default `ReplyToAddresses` |
+| `ses_send_email` | `msg/email:send` | Mirrors `sesv2 SendEmail` (`Simple` or `Raw`, exactly one). Guardrails: sender allow-list (or the `From` inside raw MIME), recipient allow-list, max recipients, the raw ladder (`raw_base64` → `raw_size` → `raw_mime` → `sender_allow_list`, each stage its own decision), attachment decoding and combined size (`attachment_base64`, `attachment_size`, same `EMAIL_MAX_RAW_BYTES` budget), rate limits. `ContentDisposition: INLINE` with a `ContentId` (or a `ContentId` alone) renders as a `cid:` image: the server assembles that message itself — HTML part and inline parts as siblings inside a `multipart/related`, ordinary attachments outside it — and sends it as `Content.Raw`, because SES's own `Simple` assembly roots everything under `multipart/mixed` where a `cid:` never resolves ([plan](plans/email-inline-mime.md)). Write the `ContentId` with or without angle brackets; the HTML references the bare form. Those sends run four more guardrails (`attachment_fields`, `inline_content_id`, `inline_needs_html`, `inline_cid_refs` — a `cid:` the message does not declare is refused) plus `assembled_size` against SES's 40 MB ceiling. **Breaking change:** a `DryRun` of an inline send echoes `WouldCall.Content.Raw` — anything reading `WouldCall.Content.Simple.Attachments` for one now finds nothing there. Sends with no inline attachment are unchanged. An attachment may carry `RawContentKey` (a `shared/…` files-bucket key) instead of `RawContent`, and the server reads those bytes itself; that path also requires `msg/read` (it is a files-store read), refuses keys outside `shared/` and objects past their expiry, and checks the object's size before downloading it. `ServerMetadata.content_digests` hashes each binary part it received. Injected: `ConfigurationSetName` (event trail), default `ReplyToAddresses` |
 | `ses_list_email_identities` | `msg/read` | Verified sender identities |
 | `ses_get_account` | `msg/read` | Sandbox/production flag and quotas |
 

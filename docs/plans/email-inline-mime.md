@@ -1,9 +1,10 @@
 # Inline-MIME plan — make `cid:` images actually render
 
 Status: **in progress**. PR A (this plan, the docs correction, and the
-non-blocking `inline_not_rendered` warning) and PR B (the `internal/mimebuild`
-assembler plus the inline guardrails, both unwired) are shipped; PRs C–E are
-not started. Post-M5 work on `ses_send_email` only ([PRD](../PRD.md) §5.3, §8):
+non-blocking `inline_not_rendered` warning), PR B (the `internal/mimebuild`
+assembler plus the inline guardrails, both unwired), and PR C (the assembler
+wired into `ses_send_email`, which is the behaviour fix) are shipped; PRs D–E
+are not started. Post-M5 work on `ses_send_email` only ([PRD](../PRD.md) §5.3, §8):
 no new tools, no infrastructure, no new environment variable. It reopens
 what [email-composition.md](email-composition.md) claimed to have closed
 (EC-13) after a client proved the claim false in production. Exit criteria:
@@ -200,7 +201,7 @@ has opinions) arriving through a different door.
 | --- | --- | --- | --- |
 | A | `fix: correct the inline-CID claim and warn callers` | This plan; the tool description, `internal/schemas` doc comments, PRD §5.3, `docs/server.md`, `docs/files.md`, the e2e comment, and `email-composition.md` (EC-13, EC-14, §4) corrected; a non-blocking `inline_not_rendered` guardrail decision on any `INLINE`/`ContentId` attachment; PRD Appendix C row | **shipped** |
 | B | `feat: internal/mimebuild multipart assembler` | The assembler and the tree walker, plus `internal/guardrails/email.go` string validation (`attachment_fields`, `inline_content_id`, `inline_needs_html`, `inline_cid_refs`). Unwired: nothing calls it, `ses_send_email` behaves exactly as it does today. Tests include the structural parse of §8 | **shipped** |
-| C | `feat: assemble multipart/related for inline attachments` | Wire the assembler into `sendEmail` behind the "any `INLINE` or `ContentId`" condition; clear `ReplyToAddresses` on that path; the assembled-size check (§9); remove the `inline_not_rendered` warning; correct every doc PR A corrected, again; e2e sends a real inline image and the owner confirms rendering | planned |
+| C | `feat: assemble multipart/related for inline attachments` | Wire the assembler into `sendEmail` behind the "any `INLINE` or `ContentId`" condition; clear `ReplyToAddresses` on that path; the assembled-size check (§9); remove the `inline_not_rendered` warning; correct every doc PR A corrected, again; e2e sends a real inline image and the owner confirms rendering | **shipped** |
 | D | `feat: ServerMetadata.mime_structure` | The flat part list (§6) on `DryRun` and real sends, for both the assembled path and a caller-supplied `Content.Raw` (R3) | planned |
 | E | `feat: Content.Raw.DataKey` | Attach-by-reference for a whole raw MIME message (R2, EC-14), on the same read path as `RawContentKey` | planned |
 
@@ -217,6 +218,14 @@ is that we accepted a proxy (an SDK struct field) for the thing itself.
 | **Injection tests** (unit, PR B) | `\r\n`, `\n`, and long-header attempts in `FileName`, `Subject`, `ContentDescription`, `ContentId`, and every address field are refused, not encoded into the message |
 | **Full-chain** (PR C) | The MCP client round trip, as EC-8 taught: a handler-level test bypasses the SDK's validating wrapper and would miss an output-schema fault |
 | **e2e** (PR C) | A real send to the owner's mailbox with a real PNG, and the owner opens it in each client. Recorded in this document with the date, like the M5 drills |
+
+PR C shipped the automated half: `TestAttachByReference` now parses the
+assembled message out of the `DryRun` echo and then sends the same inline
+image for real, through `awaitDelivery`. **The acceptance criterion is still
+open** — it needs the owner to open that message in Gmail (web, iOS, Android),
+Apple Mail, and Outlook and confirm the image renders in the body. Record the
+date and the five results here when that is done; until then this plan has
+fixed the mechanism the diagnosis identified, not yet proved the outcome.
 
 ## 9. Budgets
 
@@ -246,3 +255,7 @@ Continuing the EC-N sequence of
 | EC-18 | **`net/mail.ParseAddress` already refuses CR and LF anywhere in an address**, including inside a quoted display name, and `Address.String` quotes or encodes what it re-emits | The address defence is the parse itself; a separate CRLF pre-check would be unreachable code. §5 assigned "address round-tripping" to `internal/guardrails`, but it belongs where the header is written: the sender allow-list already parses `From`, the recipient guardrails already run, and a second decision would only duplicate them. The guardrail half of PR B is the four decisions that have no other home (`attachment_fields`, `inline_content_id`, `inline_needs_html`, `inline_cid_refs`). PR B |
 | EC-19 | **"Which attachments are inline" had to be decided, not assumed.** The reporting client set `ContentDisposition: INLINE` *and* `ContentId`, but nothing forces a caller to set both, and a part with a `ContentId` the HTML references has to be inside the `multipart/related` or the reported bug simply reappears for that caller | Both packages apply one rule: `INLINE` is inline, a `ContentId` with no disposition at all is inline, and an explicit `ATTACHMENT` wins (so a file can still carry a `Content-ID` without joining the related group). `guardrails.InlineAttachments` and `mimebuild.isInline` are written to the same rule so the checks cover exactly the parts the assembler will place inline. PR B |
 | EC-20 | **`crypto/rand.Text` (Go 1.24) gives boundaries with no error to handle**: 26 base32 characters, all legal in a boundary, well inside `multipart.Writer`'s 70-character limit | The default boundary generator is one line and cannot fail, which keeps the injectable `Message.Boundary` seam purely a determinism device rather than an error path. PR B |
+| EC-21 | **`guardrails.InlineAttachments` returning *no decisions* is itself the "nothing is inline" test.** It already applies EC-19's rule to every attachment and returns `nil` when none matches, so the handler needs no `isInline` of its own to decide whether to assemble | The wiring condition is `len(decisions) > 0`. A third copy of the rule in `mcpserver` is exactly the drift EC-19 warned about, and it would have been invisible: the checks would cover one set of parts and the assembler another, which is the reported bug again for whichever attachment fell through the gap. PR C |
+| EC-22 | **`contentDigests` would have erased every per-attachment digest on the assembled path.** Its first line early-returns a single `{part:"raw"}` digest whenever a decoded whole message is present, and the assembled message is exactly that | The assembled bytes are a separate parameter with their own name, appended *after* the per-attachment loop; `"raw"` stays reserved for a caller-supplied `Content.Raw`. The digests are the one diagnostic the reporting client singled out as working ("let us prove payload integrity and rule it out as a cause within one call"), and replacing per-attachment hashes with one whole-message hash would have taken that away in the same PR that fixed the rendering. PR C |
+| EC-23 | **`Reply-To` and `Bcc` move in opposite directions when the content shape changes.** `Reply-To` becomes a header we write, so the API parameter must be dropped or SES adds a second one (RFC 5322 §3.6 permits one, and clients disagree about which wins); `Bcc` must stay on `Destination.BccAddresses`, because a header would be delivered to every recipient | Both are one line, and both fail silently in opposite ways — a duplicate header nobody notices, or every hidden recipient disclosed to everybody. Each has its own test asserting the header *and* the API parameter, not one or the other. PR C |
+| EC-24 | **The 40 MB check cannot be reached through attachments at all.** `EmailMaxRawBytes` caps decoded attachments at 10 MB, which assembles to ~13.7 MB, so `assembled_size` can only ever fire on an enormous `Text`/`Html` body — those travel as JSON and no guardrail meters them | It is a backstop over the one unmetered input, not a second attachment budget, which is also why reusing the 10 MB number would have been a regression rather than a tightening (§9). Testing it at the handler would mean building a 40 MB message, so `assembledSize` is its own function and is tested directly at both sides of the boundary. PR C |

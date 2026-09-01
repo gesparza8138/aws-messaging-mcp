@@ -2,7 +2,7 @@
 
 # `ses_send_email`
 
-Send an email via Amazon SES (sesv2 SendEmail shape); requires msg/email:send. Supports DryRun. Inline (cid:) images do NOT work through Simple attachments: SES assembles them under a multipart/mixed root, so ContentDisposition INLINE plus a ContentId is accepted and delivered but the image arrives as an ordinary attachment and the HTML's cid: reference stays unresolved (the non-blocking inline_not_rendered guardrail decision says so). The only shape that renders an image in the body today is Content.Raw carrying a hand-built multipart/related message; server-side assembly is planned (docs/plans/email-inline-mime.md). An attachment already in the files bucket is attached by key (RawContentKey from files_put_object or files_list_objects) instead of inline bytes; that path also requires msg/read. Raw content and decoded attachments share a 10 MB budget by default, and SES caps the assembled message at 40 MB. Verify payload integrity with ServerMetadata.content_digests (SHA-256 and byte count per attachment, or for the raw message) rather than re-reading the echoed bytes.
+Send an email via Amazon SES (sesv2 SendEmail shape); requires msg/email:send. Supports DryRun. Inline (cid:) images work through Simple attachments: when an attachment is ContentDisposition INLINE, or carries a ContentId with no disposition at all, the server assembles a multipart/related message itself — the Html part and the image as siblings — and sends it as Content.Raw, so a cid:the-content-id reference in the Html body (the src of an img tag) renders the image in the body instead of the file arriving as an ordinary attachment. Give the ContentId with or without angle brackets ("chart" or "<chart>"); the HTML always references the bare form. A DryRun of such a send therefore echoes WouldCall.Content.Raw, not Content.Simple, because that is the exact call made. Sends with no inline attachment are unchanged: they go to SES as Content.Simple and SES assembles them. An attachment already in the files bucket is attached by key (RawContentKey from files_put_object or files_list_objects) instead of inline bytes; that path also requires msg/read. Raw content and decoded attachments share a 10 MB budget by default, and SES caps the assembled message at 40 MB. Verify payload integrity with ServerMetadata.content_digests (SHA-256 and byte count per attachment, plus one for the assembled message, or for a caller-supplied raw message) rather than re-reading the echoed bytes.
 
 ## Input schema
 
@@ -44,11 +44,11 @@ Send an email via Amazon SES (sesv2 SendEmail shape); requires msg/email:send. S
                     "type": "string"
                   },
                   "ContentDisposition": {
-                    "description": "Either ATTACHMENT (default) or INLINE; INLINE does NOT render the image in the body today, because SES assembles Simple attachments under multipart/mixed rather than the multipart/related a cid: reference needs - send Content.Raw with a hand-built multipart/related message for that. Case-sensitive.",
+                    "description": "Either ATTACHMENT (default) or INLINE; INLINE (like a ContentId with no disposition) makes the server assemble the message itself, placing this part in a multipart/related beside the Html body and sending it as Content.Raw, so a cid: reference renders it in the body. INLINE requires an Html body and a ContentId; a part the HTML never references still travels as an ordinary attachment. Case-sensitive.",
                     "type": "string"
                   },
                   "ContentId": {
-                    "description": "Content-ID recorded on the attachment part; a cid:\u003cvalue\u003e reference in the HTML body does not resolve to it, because SES assembles Simple attachments under multipart/mixed - use Content.Raw with a multipart/related message for a rendered inline image",
+                    "description": "Content-ID recorded on the attachment part, which an \u003cimg src=\"cid:\u003cvalue\u003e\"\u003e in the Html body resolves to because the server assembles the inline parts into a multipart/related itself. Give it with or without angle brackets (chart or \u003cchart\u003e); the HTML always references the bare form. 1-78 characters from [A-Za-z0-9._@+-], unique across the message. A ContentId with no ContentDisposition counts as INLINE; set ATTACHMENT explicitly to carry one without embedding the part",
                     "type": "string"
                   },
                   "ContentTransferEncoding": {

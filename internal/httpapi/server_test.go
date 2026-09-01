@@ -432,7 +432,9 @@ func TestSESDryRunThroughFullChain(t *testing.T) {
 }
 
 // TestSESContentDigestThroughFullChain proves the digest survives the JSON
-// round trip the client actually reads it from.
+// round trip the client actually reads it from. The attachment here is an
+// ordinary one, so the call stays on SES's Simple path; the inline shape is
+// the test below.
 func TestSESContentDigestThroughFullChain(t *testing.T) {
 	f := newFixtureWithSES(t)
 	png := []byte("\x89PNG not really a png")
@@ -441,9 +443,9 @@ func TestSESContentDigestThroughFullChain(t *testing.T) {
 		"Destination":      map[string]any{"ToAddresses": []string{"owner@example.com"}},
 		"Content": map[string]any{"Simple": map[string]any{
 			"Subject": map[string]any{"Data": "s"},
-			"Body":    map[string]any{"Html": map[string]any{"Data": `<img src="cid:logo">`}},
+			"Body":    map[string]any{"Html": map[string]any{"Data": `<p>the logo is attached</p>`}},
 			"Attachments": []any{map[string]any{
-				"FileName": "logo.png", "ContentType": "image/png", "ContentDisposition": "INLINE", "ContentId": "logo",
+				"FileName": "logo.png", "ContentType": "image/png", "ContentDisposition": "ATTACHMENT",
 				"RawContent": base64.StdEncoding.EncodeToString(png),
 			}},
 		}},
@@ -467,6 +469,59 @@ func TestSESContentDigestThroughFullChain(t *testing.T) {
 	att := out["WouldCall"].(map[string]any)["Content"].(map[string]any)["Simple"].(map[string]any)["Attachments"].([]any)[0]
 	if att.(map[string]any)["RawContent"] != base64.StdEncoding.EncodeToString(png) {
 		t.Fatalf("WouldCall attachment bytes: %v", att)
+	}
+}
+
+// TestSESInlineAssemblyThroughFullChain is the assembled path through the MCP
+// client, which is the only place the SDK validates the result against the
+// declared output schema: the echo moves from Content.Simple to Content.Raw
+// here, and its Data is the third []byte the override has to describe as a
+// base64 string (EC-8). It also proves the caller can read the tree back.
+func TestSESInlineAssemblyThroughFullChain(t *testing.T) {
+	f := newFixtureWithSES(t)
+	png := []byte("\x89PNG not really a png")
+	result, err := emailSession(t, f).CallTool(context.Background(), &mcp.CallToolParams{Name: "ses_send_email", Arguments: map[string]any{
+		"FromEmailAddress": "mcp-dev@example.com",
+		"Destination":      map[string]any{"ToAddresses": []string{"owner@example.com"}},
+		"Content": map[string]any{"Simple": map[string]any{
+			"Subject": map[string]any{"Data": "s"},
+			"Body":    map[string]any{"Html": map[string]any{"Data": `<img src="cid:logo">`}},
+			"Attachments": []any{map[string]any{
+				"FileName": "logo.png", "ContentType": "image/png", "ContentDisposition": "INLINE", "ContentId": "logo",
+				"RawContent": base64.StdEncoding.EncodeToString(png),
+			}},
+		}},
+		"DryRun": true,
+	}})
+	if err != nil || result.IsError {
+		t.Fatalf("call: %v %+v", err, result)
+	}
+	out := structured(t, result)
+	content := out["WouldCall"].(map[string]any)["Content"].(map[string]any)
+	if content["Simple"] != nil {
+		t.Fatalf("an inline send is assembled, so the echo is Content.Raw: %v", content)
+	}
+	encoded, ok := content["Raw"].(map[string]any)["Data"].(string)
+	if !ok {
+		t.Fatalf("Content.Raw.Data must come back as a base64 string: %v", content)
+	}
+	msg, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		t.Fatalf("Content.Raw.Data: %v", err)
+	}
+	if !strings.Contains(string(msg), "multipart/related") || !strings.Contains(string(msg), "Content-ID: <logo>") {
+		t.Fatalf("the assembled message must put the image in a related group:\n%s", msg)
+	}
+	// One digest per attachment, plus one for the message they were assembled
+	// into.
+	digests := out["ServerMetadata"].(map[string]any)["content_digests"].([]any)
+	if len(digests) != 2 {
+		t.Fatalf("digests: %v", digests)
+	}
+	whole := digests[1].(map[string]any)
+	sum := sha256.Sum256(msg)
+	if whole["part"] != "assembled" || whole["sha256"] != hex.EncodeToString(sum[:]) || whole["bytes"] != float64(len(msg)) {
+		t.Fatalf("assembled digest: %v", whole)
 	}
 }
 
