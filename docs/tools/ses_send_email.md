@@ -2,7 +2,7 @@
 
 # `ses_send_email`
 
-Send an email via Amazon SES (sesv2 SendEmail shape); requires msg/email:send. Supports DryRun. Inline (cid:) images work through Simple attachments: when an attachment is ContentDisposition INLINE, or carries a ContentId with no disposition at all, the server assembles a multipart/related message itself — the Html part and the image as siblings — and sends it as Content.Raw, so a cid:the-content-id reference in the Html body (the src of an img tag) renders the image in the body instead of the file arriving as an ordinary attachment. Give the ContentId with or without angle brackets ("chart" or "<chart>"); the HTML always references the bare form. A DryRun of such a send therefore echoes WouldCall.Content.Raw, not Content.Simple, because that is the exact call made. Sends with no inline attachment are unchanged: they go to SES as Content.Simple and SES assembles them. An attachment already in the files bucket is attached by key (RawContentKey from files_put_object or files_list_objects) instead of inline bytes; that path also requires msg/read. Raw content and decoded attachments share a 10 MB budget by default, and SES caps the assembled message at 40 MB. Verify payload integrity with ServerMetadata.content_digests (SHA-256 and byte count per attachment, plus one for the assembled message, or for a caller-supplied raw message) rather than re-reading the echoed bytes.
+Send an email via Amazon SES (sesv2 SendEmail shape); requires msg/email:send. Supports DryRun. Inline (cid:) images work through Simple attachments: when an attachment is ContentDisposition INLINE, or carries a ContentId with no disposition at all, the server assembles a multipart/related message itself — the Html part and the image as siblings — and sends it as Content.Raw, so a cid:the-content-id reference in the Html body (the src of an img tag) renders the image in the body instead of the file arriving as an ordinary attachment. Give the ContentId with or without angle brackets ("chart" or "<chart>"); the HTML always references the bare form. A DryRun of such a send therefore echoes WouldCall.Content.Raw, not Content.Simple, because that is the exact call made. Sends with no inline attachment are unchanged: they go to SES as Content.Simple and SES assembles them. An attachment already in the files bucket is attached by key (RawContentKey from files_put_object or files_list_objects) instead of inline bytes, and a complete MIME message the same way (Content.Raw.DataKey instead of Content.Raw.Data, exactly one of the two) — which is how a message too large to emit as one base64 string is sent at all; both paths also require msg/read. Raw content and decoded attachments share a 10 MB budget by default, and SES caps the assembled message at 40 MB. Inspect the message before sending it with ServerMetadata.mime_structure: one flat entry per MIME part (path like 1.2.1, depth, content type, Content-ID, disposition, filename, encoded size) for the message the server assembled or the raw one it was given, so a DryRun shows whether the image really is a sibling of the Html part inside a multipart/related. Verify payload integrity with ServerMetadata.content_digests (SHA-256 and byte count per attachment, plus one for the assembled message, or for a caller-supplied raw message) rather than re-reading the echoed bytes.
 
 ## Input schema
 
@@ -16,16 +16,17 @@ Send an email via Amazon SES (sesv2 SendEmail shape); requires msg/email:send. S
       "properties": {
         "Raw": {
           "additionalProperties": false,
-          "description": "Complete MIME message, base64-encoded",
+          "description": "Complete MIME message, base64-encoded inline (Data) or named by files-bucket key (DataKey)",
           "properties": {
             "Data": {
-              "description": "Complete MIME message, base64-encoded; shares the server budget with attachments (10 MB decoded by default), and SES caps the assembled message at 40 MB",
+              "description": "Complete MIME message, base64-encoded; exactly one of Data or DataKey must be set. Shares the server budget with attachments (10 MB decoded by default), and SES caps the assembled message at 40 MB",
+              "type": "string"
+            },
+            "DataKey": {
+              "description": "Key of an object already in the files bucket (shared/... from files_put_object or files_list_objects) holding the complete MIME message, read by the server instead of Data; exactly one of the two must be set. Use it when the message is too large to emit as one base64 string. Requires msg/read as well as msg/email:send, and the object must still be within its expiry and inside the same email budget. The guardrail ladder is raw_size, raw_mime, sender_allow_list — raw_base64 has nothing to decide, and the From header can only be checked after the object is read",
               "type": "string"
             }
           },
-          "required": [
-            "Data"
-          ],
           "type": [
             "null",
             "object"
@@ -66,7 +67,7 @@ Send an email via Amazon SES (sesv2 SendEmail shape); requires msg/email:send. S
                     "type": "string"
                   },
                   "RawContentKey": {
-                    "description": "Key of an object already in the files bucket (shared/... from files_put_object or files_list_objects) to attach instead of RawContent; exactly one of the two must be set. Requires msg/read as well as msg/email:send, and the object must still be within its expiry and inside the attachment budget",
+                    "description": "Key of an object already in the files bucket (shared/... from files_put_object or files_list_objects) to attach instead of RawContent; exactly one of the two must be set. Requires msg/read as well as msg/email:send, and the object must still be within its expiry and inside the email budget attachments and Raw content share",
                     "type": "string"
                   }
                 },
@@ -304,6 +305,45 @@ Send an email via Amazon SES (sesv2 SendEmail shape); requires msg/email:send. S
             "required": [
               "name",
               "allowed"
+            ],
+            "type": "object"
+          },
+          "type": [
+            "null",
+            "array"
+          ]
+        },
+        "mime_structure": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "bytes": {
+                "type": "integer"
+              },
+              "content_id": {
+                "type": "string"
+              },
+              "content_type": {
+                "type": "string"
+              },
+              "depth": {
+                "type": "integer"
+              },
+              "disposition": {
+                "type": "string"
+              },
+              "filename": {
+                "type": "string"
+              },
+              "path": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "path",
+              "depth",
+              "content_type",
+              "bytes"
             ],
             "type": "object"
           },

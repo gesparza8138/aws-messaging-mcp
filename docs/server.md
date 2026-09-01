@@ -81,13 +81,48 @@ nothing binary was sent.
 > base64 inside the MIME, and then the whole of it as base64 again for
 > `Content.Raw.Data`.
 
+**`ServerMetadata.mime_structure`** (`ses_send_email`): the MIME part tree of
+the message that will actually be sent — headers, never bodies — on a
+`DryRun` and on the real send alike, so an image that does not render can be
+diagnosed from the call instead of by sending real mail to a real person and
+asking what they saw. One entry per part:
+
+```jsonc
+[ { "path": "1",     "depth": 0, "content_type": "multipart/alternative", "bytes": 0 },
+  { "path": "1.1",   "depth": 1, "content_type": "text/plain", "bytes": 4 },
+  { "path": "1.2",   "depth": 1, "content_type": "multipart/related", "bytes": 0 },
+  { "path": "1.2.1", "depth": 2, "content_type": "text/html", "bytes": 36 },
+  { "path": "1.2.2", "depth": 2, "content_type": "image/png", "disposition": "inline",
+    "content_id": "logo", "filename": "logo.png", "bytes": 16 } ]
+```
+
+`path` is dotted (`1` is the whole message, `1.2.1` the first child of its
+second child), so sibling-hood — the thing a `cid:` reference depends on — is
+readable straight off it: above, the image and the HTML part are both
+children of the `multipart/related`. `bytes` is the part's body *as encoded
+in the message*; a container reports 0 and its children carry the bytes.
+The list is **flat** by necessity, not by taste: the tool's output schema is
+inferred from Go types at registration and `jsonschema.For` refuses a named
+recursive type, so a nested `Parts` field would panic every tool registration
+([plan](plans/email-inline-mime.md) §6). Rebuild the tree from the paths.
+
+It covers both messages the server owns: the one it assembled for an inline
+send (reported from the assembler, so it cannot disagree with the bytes) and
+a caller-supplied `Content.Raw` — inline `Data` or a `DataKey` — which is
+parsed back under conservative bounds (depth 10, 200 parts) because those
+bytes are untrusted. A message that will not parse omits the field rather
+than failing the send: the raw ladder has already checked everything that
+decides deliverability, and a diagnostic is not worth refusing a send over.
+A `Simple` send omits it too — SES assembles that one, so there is no tree
+for the server to describe.
+
 ## The tools
 
 ### Email (SES)
 
 | Tool | Scope | Behaviour |
 | --- | --- | --- |
-| `ses_send_email` | `msg/email:send` | Mirrors `sesv2 SendEmail` (`Simple` or `Raw`, exactly one). Guardrails: sender allow-list (or the `From` inside raw MIME), recipient allow-list, max recipients, the raw ladder (`raw_base64` → `raw_size` → `raw_mime` → `sender_allow_list`, each stage its own decision), attachment decoding and combined size (`attachment_base64`, `attachment_size`, same `EMAIL_MAX_RAW_BYTES` budget), rate limits. `ContentDisposition: INLINE` with a `ContentId` (or a `ContentId` alone) renders as a `cid:` image: the server assembles that message itself — HTML part and inline parts as siblings inside a `multipart/related`, ordinary attachments outside it — and sends it as `Content.Raw`, because SES's own `Simple` assembly roots everything under `multipart/mixed` where a `cid:` never resolves ([plan](plans/email-inline-mime.md)). Write the `ContentId` with or without angle brackets; the HTML references the bare form. Those sends run four more guardrails (`attachment_fields`, `inline_content_id`, `inline_needs_html`, `inline_cid_refs` — a `cid:` the message does not declare is refused) plus `assembled_size` against SES's 40 MB ceiling. **Breaking change:** a `DryRun` of an inline send echoes `WouldCall.Content.Raw` — anything reading `WouldCall.Content.Simple.Attachments` for one now finds nothing there. Sends with no inline attachment are unchanged. An attachment may carry `RawContentKey` (a `shared/…` files-bucket key) instead of `RawContent`, and the server reads those bytes itself; that path also requires `msg/read` (it is a files-store read), refuses keys outside `shared/` and objects past their expiry, and checks the object's size before downloading it. `ServerMetadata.content_digests` hashes each binary part it received. Injected: `ConfigurationSetName` (event trail), default `ReplyToAddresses` |
+| `ses_send_email` | `msg/email:send` | Mirrors `sesv2 SendEmail` (`Simple` or `Raw`, exactly one). Guardrails: sender allow-list (or the `From` inside raw MIME), recipient allow-list, max recipients, the raw ladder (`raw_base64` → `raw_size` → `raw_mime` → `sender_allow_list`, each stage its own decision), attachment decoding and combined size (`attachment_base64`, `attachment_size`, same `EMAIL_MAX_RAW_BYTES` budget), rate limits. `ContentDisposition: INLINE` with a `ContentId` (or a `ContentId` alone) renders as a `cid:` image: the server assembles that message itself — HTML part and inline parts as siblings inside a `multipart/related`, ordinary attachments outside it — and sends it as `Content.Raw`, because SES's own `Simple` assembly roots everything under `multipart/mixed` where a `cid:` never resolves ([plan](plans/email-inline-mime.md)). Write the `ContentId` with or without angle brackets; the HTML references the bare form. Those sends run four more guardrails (`attachment_fields`, `inline_content_id`, `inline_needs_html`, `inline_cid_refs` — a `cid:` the message does not declare is refused) plus `assembled_size` against SES's 40 MB ceiling. **Breaking change:** a `DryRun` of an inline send echoes `WouldCall.Content.Raw` — anything reading `WouldCall.Content.Simple.Attachments` for one now finds nothing there. Sends with no inline attachment are unchanged. An attachment may carry `RawContentKey` (a `shared/…` files-bucket key) instead of `RawContent`, and a whole raw message may carry `Content.Raw.DataKey` instead of `Content.Raw.Data` (exactly one of each pair) — the server reads those bytes itself; both paths also require `msg/read` (they are files-store reads), refuse keys outside `shared/` and objects past their expiry, and check the object's size before downloading it. A `DataKey` message runs the ladder from `raw_size` on: `raw_base64` is absent because nothing was base64-encoded, and `sender_allow_list` is decided *after* the read because the `From` header is inside the object — the recipient guardrails and the rate limiter still refuse before any S3 read. `ServerMetadata.content_digests` hashes each binary part it received, and `ServerMetadata.mime_structure` describes the part tree it will send. Injected: `ConfigurationSetName` (event trail), default `ReplyToAddresses` |
 | `ses_list_email_identities` | `msg/read` | Verified sender identities |
 | `ses_get_account` | `msg/read` | Sandbox/production flag and quotas |
 

@@ -38,6 +38,16 @@ import (
 // would start refusing sends that work today.
 const sesMaxMessageBytes = 40 << 20
 
+// Bounds for the walk of a caller-supplied Content.Raw message, whose bytes
+// are untrusted input: a 10 MB message can hold millions of empty parts, and
+// describing the first rawWalkMaxParts of it is more useful than refusing to
+// describe it. A message the server assembled needs neither bound — its part
+// list comes back from Assemble.
+const (
+	rawWalkMaxDepth = 10
+	rawWalkMaxParts = 200
+)
+
 // ContentDigest is a SHA-256 over one decoded binary part, so a client can
 // confirm the bytes the server received are the bytes it meant to send
 // (the DryRun echo re-encodes them, a digest does not).
@@ -48,10 +58,18 @@ type ContentDigest struct {
 }
 
 // ServerMetadata accompanies every send-tool result (PRD 5.1 rule 4).
+//
+// MimeStructure describes the message ses_send_email is about to send — the
+// part tree and each part's headers, never a body — so an image that does not
+// render can be diagnosed from the call itself instead of by sending a real
+// message to a real person and asking what they saw. It is flat by necessity;
+// see the note on mimebuild.Part. Only ses_send_email ever fills it, and only
+// when there is an assembled or caller-supplied message to describe.
 type ServerMetadata struct {
 	Guardrails     []guardrails.Decision `json:"guardrails"`
 	DryRun         bool                  `json:"dry_run"`
 	ContentDigests []ContentDigest       `json:"content_digests,omitempty"`
+	MimeStructure  []mimebuild.Part      `json:"mime_structure,omitempty"`
 }
 
 // SendEmailOutput is the ses_send_email result.
@@ -67,6 +85,12 @@ type SendEmailOutput struct {
 // Content.Raw.Data and Attachments[].RawContent) and failed the whole call —
 // any DryRun carrying binary content came back to the client as a JSON-RPC
 // error. Only this tool echoes []byte, so only this tool needs the override.
+//
+// The panic is also why ServerMetadata.MimeStructure is a flat []mimebuild.Part
+// and not a tree: jsonschema.For errors on any named recursive type, so a
+// Parts []Part field would panic here, inside NewServer, and take down every
+// tool registration, cmd/gendocs, and the Lambda cold start for the sake of one
+// diagnostic field. TestSendEmailOutputSchemaStaysInferable is the tripwire.
 func sendEmailOutputSchema() *jsonschema.Schema {
 	schema, err := jsonschema.For[SendEmailOutput](&jsonschema.ForOptions{
 		TypeSchemas: map[reflect.Type]*jsonschema.Schema{
@@ -102,8 +126,9 @@ func (d Deps) sendEmail() mcp.ToolHandlerFor[schemas.SendEmailInput, SendEmailOu
 		s := d.Settings
 		var result guardrails.Result
 
-		// Shape rules first (PRD 5.3): exactly one of Simple / Raw, and per
-		// attachment exactly one of RawContent / RawContentKey.
+		// Shape rules first (PRD 5.3): exactly one of Simple / Raw, per
+		// attachment exactly one of RawContent / RawContentKey, and for Raw
+		// exactly one of Data / DataKey.
 		if in.Content == nil || (in.Content.Simple == nil) == (in.Content.Raw == nil) {
 			return toolError("Content must contain exactly one of Simple or Raw"), SendEmailOutput{}, nil
 		}
@@ -114,6 +139,9 @@ func (d Deps) sendEmail() mcp.ToolHandlerFor[schemas.SendEmailInput, SendEmailOu
 				}
 			}
 		}
+		if in.Content.Raw != nil && (in.Content.Raw.Data == "") == (in.Content.Raw.DataKey == "") {
+			return toolError("Content.Raw must set exactly one of Data or DataKey"), SendEmailOutput{}, nil
+		}
 		recipients := in.Destination.All()
 		result.Add(guardrails.MaxRecipients(len(recipients), s.MaxRecipients))
 		result.Add(guardrails.RecipientsAllowed(recipients, s.RecipientAllowList))
@@ -121,24 +149,50 @@ func (d Deps) sendEmail() mcp.ToolHandlerFor[schemas.SendEmailInput, SendEmailOu
 		// bytes instead of decoding them a second time.
 		var rawDecoded []byte
 		var attDecoded [][]byte
-		if in.Content.Raw != nil {
+		switch {
+		case in.Content.Raw != nil && in.Content.Raw.Data != "":
 			var decisions []guardrails.Decision
 			rawDecoded, decisions = guardrails.RawEmail(in.Content.Raw.Data, s.EmailMaxRawBytes, s.SESSenderAddresses)
 			for _, dec := range decisions {
 				result.Add(dec)
 			}
-		} else {
+		case in.Content.Raw != nil:
+			// Raw.DataKey has no rung to run yet: every one of them reads the
+			// message, and the message is still in the files bucket.
+		default:
 			result.Add(guardrails.SenderAllowed(in.FromEmailAddress, s.SESSenderAddresses))
 		}
 		if d.Limiter != nil {
 			result.Add(d.Limiter.Check(ctx, "ses_send_email"))
 		}
-		// Everything above is free to evaluate, so a refusal is decided before
-		// a referenced attachment costs an S3 read: the rate limiter is the
-		// cost control (PRD §8), and fetching first would let a throttled
-		// caller keep reading the files bucket.
+		// Everything above is free to evaluate, so a refusal is decided before a
+		// referenced attachment or a referenced raw message costs an S3 read: the
+		// rate limiter is the cost control (PRD §8), and fetching first would let
+		// a throttled caller keep reading the files bucket.
+		//
+		// Raw.DataKey is the one shape that cannot keep that property whole: the
+		// From header sender_allow_list checks lives *inside* the object, so
+		// that one decision necessarily runs after the read. Recipients, the
+		// recipient count, and the rate limit still refuse before it, so the
+		// read a disallowed sender can provoke is one HeadObject plus one
+		// GetObject of an object already in the owner's own bucket.
 		if res, blocked := blockedResult(result, in.DryRun); blocked {
 			return res, SendEmailOutput{}, nil
+		}
+		if in.Content.Raw != nil && in.Content.Raw.DataKey != "" {
+			if res := d.filesReadable(ctx, "Raw.DataKey", "Raw.Data"); res != nil {
+				return res, SendEmailOutput{}, nil
+			}
+			body, res := d.fetchSharedObject(ctx, "Raw.DataKey", in.Content.Raw.DataKey)
+			if res != nil {
+				return res, SendEmailOutput{}, nil
+			}
+			// Identical ladder to an inlined Raw.Data from raw_size on, so a
+			// message that would have been refused inline is refused by key too.
+			rawDecoded = body
+			for _, dec := range guardrails.RawEmailBytes(body, s.EmailMaxRawBytes, s.SESSenderAddresses) {
+				result.Add(dec)
+			}
 		}
 		if in.Content.Simple != nil {
 			// From here a referenced attachment is indistinguishable from an
@@ -171,6 +225,7 @@ func (d Deps) sendEmail() mcp.ToolHandlerFor[schemas.SendEmailInput, SendEmailOu
 		// build (docs/plans/email-inline-mime.md). Every other send keeps SES's
 		// own Simple assembly, so nothing that sends today changes shape.
 		var assembled []byte
+		var structure []mimebuild.Part
 		if in.Content.Simple != nil {
 			// Which attachments count as inline is InlineAttachments' rule and
 			// not a second copy of it: it returns no decisions at all exactly
@@ -190,9 +245,11 @@ func (d Deps) sendEmail() mcp.ToolHandlerFor[schemas.SendEmailInput, SendEmailOu
 					return res, SendEmailOutput{}, nil
 				}
 				var err error
-				// The part list is Assemble's other return; PR D reports it as
-				// ServerMetadata.mime_structure.
-				if assembled, _, err = mimebuild.Assemble(assembleMessage(in, s.SESReplyTo, attDecoded)); err != nil {
+				// The part list is Assemble's other return, reported as
+				// ServerMetadata.mime_structure: the caller sees the tree it is
+				// about to send without parsing the bytes back, which is the
+				// diagnostic that was missing when the cid: images did not render.
+				if assembled, structure, err = mimebuild.Assemble(assembleMessage(in, s.SESReplyTo, attDecoded)); err != nil {
 					// Every Assemble failure is a caller mistake with no policy
 					// to phrase it as: an address that will not parse, a
 					// Content-ID that cannot go in a header, SEVEN_BIT on bytes
@@ -214,6 +271,7 @@ func (d Deps) sendEmail() mcp.ToolHandlerFor[schemas.SendEmailInput, SendEmailOu
 			atts = in.Content.Simple.Attachments
 		}
 		out.ServerMetadata.ContentDigests = contentDigests(rawDecoded, atts, attDecoded, assembled)
+		out.ServerMetadata.MimeStructure = mimeStructure(structure, rawDecoded)
 
 		call := buildSendEmail(sendEmailParams{
 			in:               in,
@@ -252,12 +310,7 @@ func (d Deps) resolveAttachments(ctx context.Context, atts []schemas.Attachment)
 	if !referenced {
 		return atts, nil
 	}
-	if d.Files == nil {
-		return nil, toolError("RawContentKey needs the files store, which this server is not configured with (no files_* tools); send the bytes inline as RawContent instead")
-	}
-	// Reading the files bucket is a files-store read, so an email-only token
-	// must not be able to exfiltrate a shared object through an attachment.
-	if res := requireScope(ctx, "msg/read"); res != nil {
+	if res := d.filesReadable(ctx, "RawContentKey", "RawContent"); res != nil {
 		return nil, res
 	}
 	resolved := make([]schemas.Attachment, len(atts))
@@ -266,7 +319,7 @@ func (d Deps) resolveAttachments(ctx context.Context, atts []schemas.Attachment)
 		if a.RawContentKey == "" {
 			continue
 		}
-		body, res := d.fetchSharedObject(ctx, i, a.RawContentKey)
+		body, res := d.fetchSharedObject(ctx, fmt.Sprintf("attachment %d", i), a.RawContentKey)
 		if res != nil {
 			return nil, res
 		}
@@ -275,13 +328,29 @@ func (d Deps) resolveAttachments(ctx context.Context, atts []schemas.Attachment)
 	return resolved, nil
 }
 
-// fetchSharedObject reads one shared object into memory for attachment i.
-// HeadObject comes first so an expired or oversize object is refused before
-// its bytes are downloaded — the files bucket allows objects far larger than
-// the email budget (PRD §8).
-func (d Deps) fetchSharedObject(ctx context.Context, i int, key string) ([]byte, *mcp.CallToolResult) {
+// filesReadable gates both by-reference paths — an attachment's RawContentKey
+// and a whole message's Raw.DataKey — on the files store existing at all and on
+// the caller holding msg/read: reading the files bucket is a files-store read,
+// so an email-only token must not be able to exfiltrate a shared object through
+// an email. field and inline name the reference and the bytes-in-line
+// alternative, so the refusal says what to do instead.
+func (d Deps) filesReadable(ctx context.Context, field, inline string) *mcp.CallToolResult {
+	if d.Files == nil {
+		return toolError(field + " needs the files store, which this server is not configured with (no files_* tools); send the bytes inline as " + inline + " instead")
+	}
+	return requireScope(ctx, "msg/read")
+}
+
+// fetchSharedObject reads one shared object into memory. HeadObject comes first
+// so an expired or oversize object is refused before its bytes are downloaded —
+// the files bucket allows objects far larger than the email budget (PRD §8).
+//
+// label names the reference in every refusal ("attachment 0", "Raw.DataKey"):
+// the two callers are far apart in the message, and an error that called a raw
+// message "attachment 0" would send the caller looking at the wrong field.
+func (d Deps) fetchSharedObject(ctx context.Context, label, key string) ([]byte, *mcp.CallToolResult) {
 	if !strings.HasPrefix(key, "shared/") {
-		return nil, toolError(fmt.Sprintf("attachment %d: Key must be under shared/", i))
+		return nil, toolError(label + ": Key must be under shared/")
 	}
 	s := d.Settings
 	head, err := d.Files.HeadObject(ctx, &s3.HeadObjectInput{
@@ -289,33 +358,33 @@ func (d Deps) fetchSharedObject(ctx context.Context, i int, key string) ([]byte,
 	})
 	if err != nil {
 		if objectMissing(err) {
-			return nil, toolError(fmt.Sprintf("attachment %d: no object %s in the files bucket", i, key))
+			return nil, toolError(fmt.Sprintf("%s: no object %s in the files bucket", label, key))
 		}
-		return nil, toolError(fmt.Sprintf("attachment %d: reading %s failed: %s", i, key, awsclients.ErrorText(err)))
+		return nil, toolError(fmt.Sprintf("%s: reading %s failed: %s", label, key, awsclients.ErrorText(err)))
 	}
 	// Cleanup runs daily, so an object whose expiry has passed is still here;
 	// attaching it would outlive the link the owner set. A missing or
 	// unparseable stamp is left alone, exactly as CleanupFiles leaves it.
 	if expires, parseErr := time.Parse(time.RFC3339, head.Metadata[expiresAtMetaKey]); parseErr == nil && !expires.After(time.Now()) {
-		return nil, toolError(fmt.Sprintf("attachment %d: the link for %s expired at %s and the object is awaiting cleanup; re-upload it to attach it",
-			i, key, head.Metadata[expiresAtMetaKey]))
+		return nil, toolError(fmt.Sprintf("%s: the link for %s expired at %s and the object is awaiting cleanup; re-upload it to attach it",
+			label, key, head.Metadata[expiresAtMetaKey]))
 	}
 	if size := aws.ToInt64(head.ContentLength); size > int64(s.EmailMaxRawBytes) {
-		return nil, toolError(fmt.Sprintf("attachment %d: %s is %d bytes, over the %d-byte attachment budget", i, key, size, s.EmailMaxRawBytes))
+		return nil, toolError(fmt.Sprintf("%s: %s is %d bytes, over the %d-byte email budget", label, key, size, s.EmailMaxRawBytes))
 	}
 	obj, err := d.Files.GetObject(ctx, &s3.GetObjectInput{
 		Bucket: aws.String(s.FilesBucket), Key: aws.String(bucketPrefix + key),
 	})
 	if err != nil {
 		if objectMissing(err) {
-			return nil, toolError(fmt.Sprintf("attachment %d: %s disappeared between the size check and the read (expiry cleanup?); re-upload it", i, key))
+			return nil, toolError(fmt.Sprintf("%s: %s disappeared between the size check and the read (expiry cleanup?); re-upload it", label, key))
 		}
-		return nil, toolError(fmt.Sprintf("attachment %d: reading %s failed: %s", i, key, awsclients.ErrorText(err)))
+		return nil, toolError(fmt.Sprintf("%s: reading %s failed: %s", label, key, awsclients.ErrorText(err)))
 	}
 	defer func() { _ = obj.Body.Close() }()
 	body, err := io.ReadAll(obj.Body)
 	if err != nil {
-		return nil, toolError(fmt.Sprintf("attachment %d: reading %s failed: %s", i, key, err))
+		return nil, toolError(fmt.Sprintf("%s: reading %s failed: %s", label, key, err))
 	}
 	return body, nil
 }
@@ -356,6 +425,33 @@ func contentDigests(rawDecoded []byte, atts []schemas.Attachment, attDecoded [][
 		digests = append(digests, digestOf("assembled", assembled))
 	}
 	return digests
+}
+
+// mimeStructure describes the message that will actually leave: the part list
+// Assemble already produced for a server-assembled message, or the same shape
+// walked out of a caller-supplied Content.Raw (inline Data or a DataKey the
+// server read), so a caller can debug a message it built itself. A Simple send
+// has neither — SES assembles it and the server never sees the tree — so the
+// field is absent there and omitempty keeps the metadata clean.
+//
+// A walk that fails does not fail the send. The bytes are untrusted input, the
+// raw ladder has already checked everything that decides deliverability
+// (raw_size, raw_mime, sender_allow_list), and refusing a send because a
+// *diagnostic* could not be produced would be the tail wagging the dog. The
+// caller sees no mime_structure, which is the same signal it gets for a Simple
+// send.
+func mimeStructure(assembled []mimebuild.Part, rawDecoded []byte) []mimebuild.Part {
+	if assembled != nil {
+		return assembled
+	}
+	if rawDecoded == nil {
+		return nil
+	}
+	parts, err := mimebuild.Walk(rawDecoded, rawWalkMaxDepth, rawWalkMaxParts)
+	if err != nil {
+		return nil
+	}
+	return parts
 }
 
 func digestOf(part string, decoded []byte) ContentDigest {

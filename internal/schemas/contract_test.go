@@ -25,8 +25,10 @@ var eumServerInjected = []string{"ConfigurationSetName", "ProtectConfigurationId
 // own DryRun field, but it is server-controlled — plan M3-2); MediaUpload is
 // the inline-attachment convenience; RawContentKey is its email counterpart —
 // a files-bucket key the server reads and resolves into the SDK's RawContent
-// before the call is built, so nothing new reaches SES.
-var toolOnly = map[string]bool{"DryRun": true, "MediaUpload": true, "RawContentKey": true}
+// before the call is built, so nothing new reaches SES. DataKey is the same
+// device one level up, resolved into RawMessage.Data: the object holds the
+// whole MIME message rather than one attachment.
+var toolOnly = map[string]bool{"DryRun": true, "MediaUpload": true, "RawContentKey": true, "DataKey": true}
 
 func assertFieldsExist(t *testing.T, schema, sdk reflect.Type) {
 	t.Helper()

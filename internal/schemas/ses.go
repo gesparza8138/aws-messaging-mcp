@@ -38,7 +38,7 @@ func (d *Destination) All() []string {
 // per PRD non-goals).
 type EmailContent struct {
 	Simple *Message    `json:"Simple,omitempty" jsonschema:"Structured subject/body message"`
-	Raw    *RawMessage `json:"Raw,omitempty" jsonschema:"Complete MIME message, base64-encoded"`
+	Raw    *RawMessage `json:"Raw,omitempty" jsonschema:"Complete MIME message, base64-encoded inline (Data) or named by files-bucket key (DataKey)"`
 }
 
 // Message mirrors sesv2 Message.
@@ -74,7 +74,7 @@ type Attachment struct {
 	FileName           string `json:"FileName"`
 	ContentType        string `json:"ContentType,omitempty"`
 	RawContent         string `json:"RawContent,omitempty" jsonschema:"Attachment bytes, base64-encoded; exactly one of RawContent or RawContentKey must be set. Decoded attachments and Raw content share the server budget (10 MB decoded by default), and SES caps the assembled message at 40 MB"`
-	RawContentKey      string `json:"RawContentKey,omitempty" jsonschema:"Key of an object already in the files bucket (shared/... from files_put_object or files_list_objects) to attach instead of RawContent; exactly one of the two must be set. Requires msg/read as well as msg/email:send, and the object must still be within its expiry and inside the attachment budget"`
+	RawContentKey      string `json:"RawContentKey,omitempty" jsonschema:"Key of an object already in the files bucket (shared/... from files_put_object or files_list_objects) to attach instead of RawContent; exactly one of the two must be set. Requires msg/read as well as msg/email:send, and the object must still be within its expiry and inside the email budget attachments and Raw content share"`
 	ContentDescription string `json:"ContentDescription,omitempty" jsonschema:"Human-readable description of the attachment"`
 	ContentDisposition string `json:"ContentDisposition,omitempty" jsonschema:"Either ATTACHMENT (default) or INLINE; INLINE (like a ContentId with no disposition) makes the server assemble the message itself, placing this part in a multipart/related beside the Html body and sending it as Content.Raw, so a cid: reference renders it in the body. INLINE requires an Html body and a ContentId; a part the HTML never references still travels as an ordinary attachment. Case-sensitive."`
 	// ContentId keeps the SDK's spelling (not ContentID) because the contract
@@ -83,9 +83,16 @@ type Attachment struct {
 	ContentTransferEncoding string `json:"ContentTransferEncoding,omitempty" jsonschema:"BASE64 (default), QUOTED_PRINTABLE, or SEVEN_BIT; case-sensitive"`
 }
 
-// RawMessage mirrors sesv2 RawMessage.
+// RawMessage mirrors sesv2 RawMessage. DataKey is the one field with no SDK
+// counterpart, and it is Attachment.RawContentKey's twin one level up: it names
+// an object already in the files bucket that holds the *whole* MIME message,
+// which the server reads and sends as Data. Inlining a message costs base64
+// twice over — a 75 KB image is ~100 KB as a body part and ~156,000 characters
+// once the message is base64-encoded again for Data — so a caller that has to
+// emit that string token by token cannot reach this shape at all.
 type RawMessage struct {
-	Data string `json:"Data" jsonschema:"Complete MIME message, base64-encoded; shares the server budget with attachments (10 MB decoded by default), and SES caps the assembled message at 40 MB"`
+	Data    string `json:"Data,omitempty" jsonschema:"Complete MIME message, base64-encoded; exactly one of Data or DataKey must be set. Shares the server budget with attachments (10 MB decoded by default), and SES caps the assembled message at 40 MB"`
+	DataKey string `json:"DataKey,omitempty" jsonschema:"Key of an object already in the files bucket (shared/... from files_put_object or files_list_objects) holding the complete MIME message, read by the server instead of Data; exactly one of the two must be set. Use it when the message is too large to emit as one base64 string. Requires msg/read as well as msg/email:send, and the object must still be within its expiry and inside the same email budget. The guardrail ladder is raw_size, raw_mime, sender_allow_list — raw_base64 has nothing to decide, and the From header can only be checked after the object is read"`
 }
 
 // MessageTag mirrors sesv2 MessageTag.

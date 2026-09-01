@@ -578,7 +578,7 @@ func TestSendEmailAttachByReferenceRefusals(t *testing.T) {
 		{"object past its expiry", expired, []string{"msg/email:send", "msg/read"},
 			reference(false, "shared/abc/a.bin"), "awaiting cleanup", 0},
 		{"object over the budget", oversize, []string{"msg/email:send", "msg/read"},
-			reference(false, "shared/abc/a.bin"), "2048 bytes, over the 1024-byte attachment budget", 0},
+			reference(false, "shared/abc/a.bin"), "2048 bytes, over the 1024-byte email budget", 0},
 		{"deleted between head and get", raced, []string{"msg/email:send", "msg/read"},
 			reference(false, "shared/abc/a.bin"), "disappeared between the size check and the read", 1},
 		{"get fails for another reason", getFailed, []string{"msg/email:send", "msg/read"},
@@ -853,6 +853,277 @@ func TestSendEmailInlineRefusals(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			ses := &fakeSES{}
 			res, _, _ := testDeps(ses).sendEmail()(authedCtx("msg/email:send"), nil, tc.in)
+			if res == nil || !res.IsError {
+				t.Fatalf("expected a refusal, got %+v", res)
+			}
+			if text := res.Content[0].(*mcp.TextContent).Text; !strings.Contains(text, tc.want) {
+				t.Fatalf("error text %q lacks %q", text, tc.want)
+			}
+			if ses.sendIn != nil {
+				t.Fatal("refused call must not reach SES")
+			}
+		})
+	}
+}
+
+// TestSendEmailOutputSchemaStaysInferable is the tripwire for the hazard in
+// docs/plans/email-inline-mime.md §6: jsonschema.For returns an error on any
+// named recursive type, sendEmailOutputSchema turns that error into a panic,
+// and the panic happens inside NewServer — so a mime_structure that grew a
+// Parts []Part field would take down every tool registration, cmd/gendocs, and
+// the Lambda cold start rather than failing anything a handler test calls. Here
+// it is one failing test.
+func TestSendEmailOutputSchemaStaysInferable(t *testing.T) {
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("the output schema must stay inferable; mime_structure has to be flat: %v", r)
+		}
+	}()
+	meta := sendEmailOutputSchema().Properties["ServerMetadata"]
+	if meta == nil || meta.Properties["mime_structure"] == nil {
+		t.Fatalf("mime_structure must be in the declared output schema: %+v", meta)
+	}
+	part := meta.Properties["mime_structure"].Items
+	if part == nil || part.Properties["path"] == nil || part.Properties["depth"] == nil {
+		t.Fatalf("each part carries its own path and depth, which is how a reader rebuilds the tree: %+v", part)
+	}
+}
+
+// The assembled tree is reported without re-reading the message: Assemble
+// already returned it, so mime_structure and the bytes cannot disagree.
+func TestSendEmailInlineReportsMimeStructure(t *testing.T) {
+	ses := &fakeSES{}
+	_, out, _ := testDeps(ses).sendEmail()(authedCtx("msg/email:send"), nil, inlineInput(true))
+	msg := assembledFrom(t, out.WouldCall)
+	if got := out.ServerMetadata.MimeStructure; !reflect.DeepEqual(got, parts(t, msg)) {
+		t.Fatalf("mime_structure must equal the walk of the assembled bytes: %+v", got)
+	}
+	byPath := map[string]mimebuild.Part{}
+	for _, p := range out.ServerMetadata.MimeStructure {
+		byPath[p.Path] = p
+	}
+	// Text + Html + one inline image: alternative outside, related inside, the
+	// image a sibling of the HTML. That is the whole diagnostic — a caller can
+	// see the container the cid: reference needs before anyone opens a mailbox.
+	for path, want := range map[string]string{
+		"1": "multipart/alternative", "1.1": "text/plain",
+		"1.2": "multipart/related", "1.2.1": "text/html", "1.2.2": "image/png",
+	} {
+		if byPath[path].ContentType != want {
+			t.Fatalf("part %s is %q, want %q: %+v", path, byPath[path].ContentType, want, out.ServerMetadata.MimeStructure)
+		}
+	}
+	image := byPath["1.2.2"]
+	if image.ContentID != "logo" || image.Disposition != "inline" || image.FileName != "logo.png" || image.Depth != 2 {
+		t.Fatalf("the inline part must carry its cid, disposition, filename, and depth: %+v", image)
+	}
+	if image.Bytes == 0 {
+		t.Fatal("a leaf reports its encoded byte count")
+	}
+	// A real send reports the same structure as its dry run.
+	_, sent, _ := testDeps(ses).sendEmail()(authedCtx("msg/email:send"), nil, inlineInput(false))
+	if !reflect.DeepEqual(sent.ServerMetadata.MimeStructure, out.ServerMetadata.MimeStructure) {
+		t.Fatalf("real send structure: %+v", sent.ServerMetadata.MimeStructure)
+	}
+}
+
+// A caller-supplied Content.Raw is walked, so a message the caller built by
+// hand is just as observable as one the server assembled.
+func TestSendEmailRawReportsMimeStructure(t *testing.T) {
+	msg := "From: mcp-dev@example.com\r\nTo: owner@example.com\r\nSubject: s\r\n" +
+		"MIME-Version: 1.0\r\nContent-Type: multipart/related; boundary=\"b\"; type=\"text/html\"\r\n\r\n" +
+		"--b\r\nContent-Type: text/html\r\n\r\n<img src=\"cid:logo\">\r\n" +
+		"--b\r\nContent-Type: image/png\r\nContent-ID: <logo>\r\n\r\nnot-a-png\r\n--b--\r\n"
+	in := schemas.SendEmailInput{
+		FromEmailAddress: "mcp-dev@example.com",
+		Destination:      &schemas.Destination{ToAddresses: []string{"owner@example.com"}},
+		Content:          &schemas.EmailContent{Raw: &schemas.RawMessage{Data: base64.StdEncoding.EncodeToString([]byte(msg))}},
+		DryRun:           true,
+	}
+	_, out, _ := testDeps(&fakeSES{}).sendEmail()(authedCtx("msg/email:send"), nil, in)
+	got := out.ServerMetadata.MimeStructure
+	if len(got) != 3 || got[0].ContentType != "multipart/related" || got[2].ContentID != "logo" {
+		t.Fatalf("a caller-supplied raw message must be walked: %+v", got)
+	}
+}
+
+// A structure that cannot be produced is not a reason to refuse a send: the raw
+// ladder has already checked everything that decides deliverability, and the
+// walk is a diagnostic. mail.ReadMessage accepts these headers, so raw_mime
+// passes and only the walk of the body fails.
+func TestSendEmailRawWithUnwalkableBodyStillSends(t *testing.T) {
+	msg := "From: mcp-dev@example.com\r\nTo: owner@example.com\r\n" +
+		"Content-Type: multipart/mixed\r\n\r\nno boundary parameter, so the walk cannot descend\r\n"
+	in := schemas.SendEmailInput{
+		FromEmailAddress: "mcp-dev@example.com",
+		Destination:      &schemas.Destination{ToAddresses: []string{"owner@example.com"}},
+		Content:          &schemas.EmailContent{Raw: &schemas.RawMessage{Data: base64.StdEncoding.EncodeToString([]byte(msg))}},
+	}
+	ses := &fakeSES{}
+	_, out, _ := testDeps(ses).sendEmail()(authedCtx("msg/email:send"), nil, in)
+	if out.MessageID != "msg-123" || ses.sendIn == nil {
+		t.Fatalf("the send must go through: %+v", out)
+	}
+	if out.ServerMetadata.MimeStructure != nil {
+		t.Fatalf("an unwalkable message reports no structure: %+v", out.ServerMetadata.MimeStructure)
+	}
+	// The digest still proves what arrived, which is the diagnostic that does
+	// not depend on the message parsing.
+	if len(out.ServerMetadata.ContentDigests) != 1 {
+		t.Fatalf("digests: %+v", out.ServerMetadata.ContentDigests)
+	}
+}
+
+// A Simple send has no message of ours to describe: SES assembles it, so
+// mime_structure is absent rather than guessed at.
+func TestSendEmailSimpleReportsNoMimeStructure(t *testing.T) {
+	_, out, _ := testDeps(&fakeSES{}).sendEmail()(authedCtx("msg/email:send"), nil,
+		attached(true, attachment("report.pdf", []byte("%PDF-1.7 tiny"))))
+	if out.ServerMetadata.MimeStructure != nil {
+		t.Fatalf("the Simple path has no assembled message: %+v", out.ServerMetadata.MimeStructure)
+	}
+}
+
+// rawKeyInput sends the whole MIME message by files-bucket key instead of
+// inlining ~1.78× its size as base64 in a single string parameter.
+func rawKeyInput(dryRun bool, key string) schemas.SendEmailInput {
+	return schemas.SendEmailInput{
+		FromEmailAddress: "mcp-dev@example.com",
+		Destination:      &schemas.Destination{ToAddresses: []string{"owner@example.com"}},
+		Content:          &schemas.EmailContent{Raw: &schemas.RawMessage{DataKey: key}},
+		DryRun:           dryRun,
+	}
+}
+
+// rawMessage is a minimal but real message: headers that parse, a From in the
+// allow-list, one part.
+var rawMessage = []byte("From: mcp-dev@example.com\r\nTo: owner@example.com\r\nSubject: s\r\n\r\nb\r\n")
+
+func TestSendEmailRawByKey(t *testing.T) {
+	ses, files := &fakeSES{}, refFake(rawMessage)
+	_, out, _ := refDeps(ses, files).sendEmail()(authedCtx("msg/email:send", "msg/read"), nil,
+		rawKeyInput(false, "shared/abc/message.eml"))
+	if out.MessageID != "msg-123" || ses.sendIn == nil {
+		t.Fatalf("send failed: %+v", out)
+	}
+	if got := aws.ToString(files.getIn.Key); got != "files/shared/abc/message.eml" {
+		t.Fatalf("bucket key must carry the files/ prefix: %q", got)
+	}
+	if got := ses.sendIn.Content.Raw; got == nil || string(got.Data) != string(rawMessage) {
+		t.Fatalf("the fetched message must reach SES as Content.Raw: %+v", got)
+	}
+	if ses.sendIn.Content.Simple != nil {
+		t.Fatalf("a raw send must not also carry Content.Simple: %+v", ses.sendIn.Content.Simple)
+	}
+	// Same ladder as an inlined Raw.Data from raw_size on; raw_base64 has
+	// nothing to decode, so it is absent rather than reported as passing.
+	names := map[string]bool{}
+	for _, d := range out.ServerMetadata.Guardrails {
+		if !d.Allowed {
+			t.Fatalf("nothing must block: %+v", d)
+		}
+		names[d.Name] = true
+	}
+	for _, want := range []string{"raw_size", "raw_mime", "sender_allow_list"} {
+		if !names[want] {
+			t.Fatalf("%s missing from the ladder: %+v", want, out.ServerMetadata.Guardrails)
+		}
+	}
+	if names["raw_base64"] {
+		t.Fatalf("raw_base64 has nothing to decide for a message read from the bucket: %+v", out.ServerMetadata.Guardrails)
+	}
+	// The message is the caller's however it arrived, so it digests as "raw"
+	// and is walked like any other caller-supplied Content.Raw.
+	want := []ContentDigest{{Part: "raw", Bytes: len(rawMessage), SHA256: sha256Hex(rawMessage)}}
+	if !reflect.DeepEqual(out.ServerMetadata.ContentDigests, want) {
+		t.Fatalf("digests: %+v want %+v", out.ServerMetadata.ContentDigests, want)
+	}
+	if got := out.ServerMetadata.MimeStructure; len(got) != 1 || got[0].ContentType != "text/plain" {
+		t.Fatalf("a DataKey message is walked too: %+v", got)
+	}
+}
+
+func TestSendEmailRawByKeyDryRun(t *testing.T) {
+	ses, files := &fakeSES{}, refFake(rawMessage)
+	_, out, _ := refDeps(ses, files).sendEmail()(authedCtx("msg/email:send", "msg/read"), nil,
+		rawKeyInput(true, "shared/abc/message.eml"))
+	if ses.sendIn != nil {
+		t.Fatal("DryRun must not call SES")
+	}
+	if files.getCalls != 1 {
+		t.Fatalf("DryRun must still fetch the object: %d GetObject calls", files.getCalls)
+	}
+	if out.WouldCall == nil || string(out.WouldCall.Content.Raw.Data) != string(rawMessage) {
+		t.Fatalf("would-call must carry the fetched message: %+v", out.WouldCall)
+	}
+}
+
+// The read is a cost, so the free refusals happen first — exactly as they do
+// for a referenced attachment. sender_allow_list is the one that cannot: the
+// From header it checks is inside the object.
+func TestSendEmailRawByKeyBlockedBeforeFetching(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		mutit func(*Deps, *schemas.SendEmailInput)
+		want  string
+	}{
+		{"rate limit", func(d *Deps, _ *schemas.SendEmailInput) {
+			d.Limiter = &guardrails.Limiter{Store: blockedStore{}, PerHour: 1, PerDay: 1}
+		}, "rate_limit"},
+		{"recipient", func(_ *Deps, in *schemas.SendEmailInput) {
+			in.Destination.ToAddresses = []string{"stranger@example.com"}
+		}, "recipient_allow_list"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ses, files := &fakeSES{}, refFake([]byte("never read"))
+			d := refDeps(ses, files)
+			in := rawKeyInput(false, "shared/abc/message.eml")
+			tc.mutit(&d, &in)
+			res, _, _ := d.sendEmail()(authedCtx("msg/email:send", "msg/read"), nil, in)
+			if res == nil || !res.IsError || !strings.Contains(res.Content[0].(*mcp.TextContent).Text, tc.want) {
+				t.Fatalf("want %s block, got %+v", tc.want, res)
+			}
+			if files.headCalls != 0 || files.getCalls != 0 {
+				t.Fatalf("blocked send must not touch S3: heads=%d gets=%d", files.headCalls, files.getCalls)
+			}
+		})
+	}
+}
+
+func TestSendEmailRawByKeyRefusals(t *testing.T) {
+	both := rawKeyInput(false, "shared/abc/message.eml")
+	both.Content.Raw.Data = base64.StdEncoding.EncodeToString(rawMessage)
+	neither := rawKeyInput(false, "")
+	spoofed := refFake([]byte("From: evil@x.com\r\nTo: owner@example.com\r\n\r\nb\r\n"))
+	garbage := refFake([]byte("\x00\x01 no headers here"))
+
+	for _, tc := range []struct {
+		name   string
+		files  *fakeFiles
+		scopes []string
+		in     schemas.SendEmailInput
+		want   string
+	}{
+		{"both Data and DataKey", refFake(nil), []string{"msg/email:send", "msg/read"}, both,
+			"Content.Raw must set exactly one of Data or DataKey"},
+		{"neither Data nor DataKey", refFake(nil), []string{"msg/email:send", "msg/read"}, neither,
+			"Content.Raw must set exactly one of Data or DataKey"},
+		{"key outside shared/", refFake(nil), []string{"msg/email:send", "msg/read"},
+			rawKeyInput(false, "files/shared/abc/message.eml"), "Raw.DataKey: Key must be under shared/"},
+		{"no files store on this stage", nil, []string{"msg/email:send", "msg/read"},
+			rawKeyInput(false, "shared/abc/message.eml"), "Raw.DataKey needs the files store"},
+		{"email scope alone cannot read the bucket", refFake(rawMessage), []string{"msg/email:send"},
+			rawKeyInput(false, "shared/abc/message.eml"), "msg/read"},
+		// The From lives in the fetched bytes, so this one is decided after the
+		// read — the documented consequence of resolving the key at all.
+		{"the From in the object is not in the allow-list", spoofed, []string{"msg/email:send", "msg/read"},
+			rawKeyInput(false, "shared/abc/message.eml"), "sender_allow_list"},
+		{"the object is not a MIME message", garbage, []string{"msg/email:send", "msg/read"},
+			rawKeyInput(false, "shared/abc/message.eml"), "raw_mime"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ses := &fakeSES{}
+			res, _, _ := refDeps(ses, tc.files).sendEmail()(authedCtx(tc.scopes...), nil, tc.in)
 			if res == nil || !res.IsError {
 				t.Fatalf("expected a refusal, got %+v", res)
 			}

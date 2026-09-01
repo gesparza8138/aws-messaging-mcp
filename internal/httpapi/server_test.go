@@ -523,6 +523,47 @@ func TestSESInlineAssemblyThroughFullChain(t *testing.T) {
 	if whole["part"] != "assembled" || whole["sha256"] != hex.EncodeToString(sum[:]) || whole["bytes"] != float64(len(msg)) {
 		t.Fatalf("assembled digest: %v", whole)
 	}
+	// mime_structure is the same hazard one layer deeper: a recursive part type
+	// makes jsonschema.For error, sendEmailOutputSchema panics on that error,
+	// and every tool registration goes with it — but a flat list that simply
+	// fails to validate would come back here as a JSON-RPC error instead of a
+	// result, which is EC-8 exactly. Reaching this line at all is the assertion.
+	structure := out["ServerMetadata"].(map[string]any)["mime_structure"].([]any)
+	root := structure[0].(map[string]any)
+	if root["path"] != "1" || root["depth"] != float64(0) || root["content_type"] != "multipart/related" {
+		t.Fatalf("the root part must be the related group: %v", root)
+	}
+	image := structure[len(structure)-1].(map[string]any)
+	if image["content_type"] != "image/png" || image["content_id"] != "logo" || image["disposition"] != "inline" {
+		t.Fatalf("the inline image must be described: %v", image)
+	}
+	if image["path"] != "1.2" {
+		t.Fatalf("the image must be the HTML part's sibling, which is the whole diagnostic: %v", image)
+	}
+}
+
+// TestSESRawByKeyThroughFullChain is Content.Raw.DataKey against the SDK's
+// *input* validation: Data stopped being a required property when the key form
+// was added, so a Raw carrying only DataKey has to survive the round trip. The
+// fixture registers the SES tools only, which is a stage with no files store,
+// so the refusal it reaches is the readable tool error for that.
+func TestSESRawByKeyThroughFullChain(t *testing.T) {
+	f := newFixtureWithSES(t)
+	result, err := emailSession(t, f).CallTool(context.Background(), &mcp.CallToolParams{Name: "ses_send_email", Arguments: map[string]any{
+		"FromEmailAddress": "mcp-dev@example.com",
+		"Destination":      map[string]any{"ToAddresses": []string{"owner@example.com"}},
+		"Content":          map[string]any{"Raw": map[string]any{"DataKey": "shared/abc/message.eml"}},
+		"DryRun":           true,
+	}})
+	if err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	if !result.IsError {
+		t.Fatalf("a stage with no files store must refuse the reference: %+v", result)
+	}
+	if text := result.Content[0].(*mcp.TextContent).Text; !strings.Contains(text, "Raw.DataKey needs the files store") {
+		t.Fatalf("error text: %q", text)
+	}
 }
 
 // TestSESRawDryRunThroughFullChain guards the same output-schema override on
