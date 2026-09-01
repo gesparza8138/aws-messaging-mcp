@@ -142,32 +142,56 @@ func mime(from string) string {
 	return base64.StdEncoding.EncodeToString([]byte("From: " + from + "\r\nTo: o@x.com\r\nSubject: hi\r\n\r\nbody\r\n"))
 }
 
-func TestRawEmail(t *testing.T) {
-	allow := []string{"mcp@example.com"}
-	from, decisions := RawEmail(mime("Gabe <mcp@example.com>"), 1024, allow)
-	if from != "mcp@example.com" {
-		t.Fatalf("from: %q", from)
-	}
+// decisionByName finds a decision by its guardrail name, so the assertions
+// survive the ladder growing another rung.
+func decisionByName(t *testing.T, decisions []Decision, name string) Decision {
+	t.Helper()
 	for _, d := range decisions {
-		if !d.Allowed {
-			t.Fatalf("valid raw blocked: %+v", d)
+		if d.Name == name {
+			return d
 		}
 	}
-	if _, decisions = RawEmail(mime("evil@x.com"), 1024, allow); decisions[1].Allowed {
-		t.Fatal("disallowed From must block")
-	}
-	if _, decisions = RawEmail("!!!not-base64", 1024, allow); decisions[0].Allowed {
-		t.Fatal("bad base64 must block")
-	}
-	if _, decisions = RawEmail(mime("mcp@example.com"), 10, allow); decisions[0].Allowed {
-		t.Fatal("oversize must block")
-	}
+	t.Fatalf("no %q decision in %+v", name, decisions)
+	return Decision{}
+}
+
+func TestRawEmail(t *testing.T) {
+	allow := []string{"mcp@example.com"}
 	garbage := base64.StdEncoding.EncodeToString([]byte("\x00\x01 not a mime message without headers"))
-	if _, decisions = RawEmail(garbage, 1024, allow); decisions[1].Allowed {
-		t.Fatal("unparsable MIME must block")
-	}
 	noFrom := base64.StdEncoding.EncodeToString([]byte("To: o@x.com\r\nSubject: hi\r\n\r\nbody\r\n"))
-	if _, decisions = RawEmail(noFrom, 1024, allow); decisions[1].Allowed {
-		t.Fatal("missing From must block")
+	cases := []struct {
+		name    string
+		data    string
+		maximum int
+		blocked string
+	}{
+		{"bad base64", "!!!not-base64", 1024, "raw_base64"},
+		{"oversize", mime("mcp@example.com"), 10, "raw_size"},
+		{"unparsable MIME", garbage, 1024, "raw_mime"},
+		{"missing From", noFrom, 1024, "sender_allow_list"},
+		{"disallowed sender", mime("evil@x.com"), 1024, "sender_allow_list"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, decisions := RawEmail(tc.data, tc.maximum, allow)
+			if d := decisionByName(t, decisions, tc.blocked); d.Allowed || d.Reason == "" {
+				t.Fatalf("%s must block with a reason: %+v", tc.blocked, d)
+			}
+			for _, d := range decisions {
+				if !d.Allowed && d.Name != tc.blocked {
+					t.Fatalf("only %s may block: %+v", tc.blocked, d)
+				}
+			}
+		})
+	}
+	message := "From: Gabe <mcp@example.com>\r\nTo: o@x.com\r\nSubject: hi\r\n\r\nbody\r\n"
+	decoded, decisions := RawEmail(base64.StdEncoding.EncodeToString([]byte(message)), 1024, allow)
+	if string(decoded) != message {
+		t.Fatalf("decoded bytes: %q", decoded)
+	}
+	for _, name := range []string{"raw_base64", "raw_size", "raw_mime", "sender_allow_list"} {
+		if d := decisionByName(t, decisions, name); !d.Allowed {
+			t.Fatalf("valid raw blocked: %+v", d)
+		}
 	}
 }

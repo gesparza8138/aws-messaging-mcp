@@ -220,7 +220,10 @@ Mirrors [`SendEmail`](https://docs.aws.amazon.com/ses/latest/APIReference-V2/API
         "Text": { "Data": "string" },
         "Html": { "Data": "string" }
       },
-      "Attachments": [ { "FileName": "string", "ContentType": "string", "RawContent": "base64" } ]
+      "Attachments": [ { "FileName": "string", "ContentType": "string", "RawContent": "base64",
+                         "ContentDisposition": "ATTACHMENT | INLINE", "ContentId": "cid target for INLINE",
+                         "ContentTransferEncoding": "BASE64 | QUOTED_PRINTABLE | SEVEN_BIT",
+                         "ContentDescription": "string" } ]
     }
     // "Raw": { "Data": "base64 MIME" }  -- alternative to Simple
   },
@@ -229,7 +232,7 @@ Mirrors [`SendEmail`](https://docs.aws.amazon.com/ses/latest/APIReference-V2/API
 }
 ```
 
-Server-injected: `ConfigurationSetName` (from env) and a default `ReplyToAddresses` (`esparza.gabriel@gmail.com`, overridable) because the sender domain hosts no mailboxes. Rejected if present: `FromEmailIdentityArn`, `FeedbackForwardingEmailAddress`, `ListManagementOptions`. Exactly one of `Content.Simple` / `Content.Raw`. For `Raw`, the server parses the MIME `From` header and enforces the same sender allow-list, and rejects decoded messages larger than `EmailMaxRawBytes` (default 10 MB).
+Server-injected: `ConfigurationSetName` (from env) and a default `ReplyToAddresses` (`esparza.gabriel@gmail.com`, overridable) because the sender domain hosts no mailboxes. Rejected if present: `FromEmailIdentityArn`, `FeedbackForwardingEmailAddress`, `ListManagementOptions`. Exactly one of `Content.Simple` / `Content.Raw`. For `Raw`, the server parses the MIME `From` header and enforces the same sender allow-list, and rejects decoded messages larger than `EmailMaxRawBytes` (default 10 MB); the raw ladder reports as four decisions (`raw_base64`, `raw_size`, `raw_mime`, `sender_allow_list`) so a refusal names the stage that failed. `Simple` attachments spend the same `EmailMaxRawBytes` budget (combined decoded bytes, guardrails `attachment_base64` and `attachment_size`) and SES assembles the MIME itself, so `ContentDisposition: INLINE` plus a `ContentId` embeds an image the HTML body cites as `cid:<value>` without a hand-built raw message. SES's own ceiling for the assembled message is 40 MB.
 
 #### `sms_send_text_message`
 
@@ -411,6 +414,7 @@ These run for every send tool regardless of which client or token is calling. Th
 | Recipient allow-list ("test mode") | **on** – only owner's test addresses/numbers | off | stack parameter `RecipientAllowList` |
 | Per-tool rate limit (sliding window, DynamoDB counters) | 20 / hour | 60 / hour, 300 / day | stack parameters |
 | Max recipients per email | 10 | 10 | stack parameter |
+| Email attachments: valid base64 + combined decoded size (shares the `Content.Raw` budget) | ≤ 10 MB | ≤ 10 MB | `EMAIL_MAX_RAW_BYTES` |
 | `MaxPrice` ceiling for SMS/MMS | $0.05 | $0.05 | stack parameter |
 | `DryRun` | available | available | per call |
 | Media size / type | ≤ 5 MB, jpeg/png/gif | same | code constants |

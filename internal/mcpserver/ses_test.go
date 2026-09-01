@@ -136,6 +136,15 @@ func TestSendEmailGuardrailBlocks(t *testing.T) {
 			in.Destination.ToAddresses = []string{"owner@example.com", "owner@example.com", "owner@example.com"}
 		}, "max_recipients"},
 		{"no recipients", func(in *schemas.SendEmailInput) { in.Destination = nil }, "max_recipients"},
+		{"bad attachment base64", func(in *schemas.SendEmailInput) {
+			in.Content.Simple.Attachments = []schemas.Attachment{{FileName: "a.png", RawContent: "!!!not-base64"}}
+		}, "attachment_base64"},
+		{"oversize attachments", func(in *schemas.SendEmailInput) {
+			in.Content.Simple.Attachments = []schemas.Attachment{{
+				FileName:   "big.bin",
+				RawContent: base64.StdEncoding.EncodeToString(make([]byte, 2048)), // EmailMaxRawBytes is 1024 in tests
+			}}
+		}, "attachment_size"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -188,6 +197,9 @@ func TestSendEmailRawPath(t *testing.T) {
 	_, out, _ := testDeps(ses).sendEmail()(authedCtx("msg/email:send"), nil, in)
 	if out.MessageID != "msg-123" || ses.sendIn.Content.Raw == nil {
 		t.Fatalf("raw send failed: %+v", out)
+	}
+	if !strings.Contains(string(ses.sendIn.Content.Raw.Data), "Subject: s") {
+		t.Fatalf("guardrail-decoded MIME must reach the call: %q", ses.sendIn.Content.Raw.Data)
 	}
 }
 
@@ -250,16 +262,60 @@ func TestListIdentitiesAndGetAccount(t *testing.T) {
 func TestBuildSendEmailCharsetsAndAttachments(t *testing.T) {
 	in := simpleInput(false)
 	in.Content.Simple.Subject.Charset = "UTF-8"
-	in.Content.Simple.Body.HTML = &schemas.Content{Data: "<b>hi</b>", Charset: "UTF-8"}
-	in.Content.Simple.Attachments = []schemas.Attachment{{FileName: "a.pdf", ContentType: "application/pdf", RawContent: base64.StdEncoding.EncodeToString([]byte("pdf"))}}
-	call := buildSendEmail(in, "", "")
+	in.Content.Simple.Body.HTML = &schemas.Content{Data: `<img src="cid:logo">`, Charset: "UTF-8"}
+	in.Content.Simple.Attachments = []schemas.Attachment{{
+		FileName:                "logo.png",
+		ContentType:             "image/png",
+		RawContent:              base64.StdEncoding.EncodeToString([]byte("png")),
+		ContentDescription:      "the logo",
+		ContentDisposition:      "INLINE",
+		ContentId:               "logo",
+		ContentTransferEncoding: "BASE64",
+	}}
+	call := buildSendEmail(in, "", "", nil, [][]byte{[]byte("png")})
 	if aws.ToString(call.Content.Simple.Subject.Charset) != "UTF-8" || call.Content.Simple.Body.Html == nil {
 		t.Fatalf("charset/html: %+v", call.Content.Simple)
 	}
-	if len(call.Content.Simple.Attachments) != 1 || aws.ToString(call.Content.Simple.Attachments[0].ContentType) != "application/pdf" {
+	if len(call.Content.Simple.Attachments) != 1 {
 		t.Fatalf("attachments: %+v", call.Content.Simple.Attachments)
+	}
+	att := call.Content.Simple.Attachments[0]
+	if aws.ToString(att.ContentType) != "image/png" || string(att.RawContent) != "png" {
+		t.Fatalf("attachment bytes/type: %+v", att)
+	}
+	if att.ContentDisposition != sestypes.AttachmentContentDispositionInline || aws.ToString(att.ContentId) != "logo" {
+		t.Fatalf("inline disposition/cid: %+v", att)
+	}
+	if att.ContentTransferEncoding != sestypes.AttachmentContentTransferEncodingBase64 || aws.ToString(att.ContentDescription) != "the logo" {
+		t.Fatalf("transfer encoding/description: %+v", att)
 	}
 	if call.ConfigurationSetName != nil || call.ReplyToAddresses != nil {
 		t.Fatalf("empty injections must stay unset: %+v", call)
+	}
+}
+
+func TestSendEmailInlineAttachmentThroughGuardrails(t *testing.T) {
+	ses := &fakeSES{}
+	in := simpleInput(true)
+	in.Content.Simple.Attachments = []schemas.Attachment{{
+		FileName:           "logo.png",
+		ContentType:        "image/png",
+		RawContent:         base64.StdEncoding.EncodeToString([]byte("png")),
+		ContentDisposition: "INLINE",
+		ContentId:          "logo",
+	}}
+	_, out, _ := testDeps(ses).sendEmail()(authedCtx("msg/email:send"), nil, in)
+	if out.WouldCall == nil || len(out.WouldCall.Content.Simple.Attachments) != 1 {
+		t.Fatalf("would-call attachments: %+v", out.WouldCall)
+	}
+	if string(out.WouldCall.Content.Simple.Attachments[0].RawContent) != "png" {
+		t.Fatalf("guardrail-decoded bytes must reach the call: %+v", out.WouldCall.Content.Simple.Attachments[0])
+	}
+	var sized bool
+	for _, d := range out.ServerMetadata.Guardrails {
+		sized = sized || (d.Name == "attachment_size" && d.Allowed)
+	}
+	if !sized {
+		t.Fatalf("attachment_size decision missing: %+v", out.ServerMetadata.Guardrails)
 	}
 }

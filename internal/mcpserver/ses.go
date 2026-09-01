@@ -2,7 +2,6 @@ package mcpserver
 
 import (
 	"context"
-	"encoding/base64"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/sesv2"
@@ -44,13 +43,29 @@ func (d Deps) sendEmail() mcp.ToolHandlerFor[schemas.SendEmailInput, SendEmailOu
 		recipients := in.Destination.All()
 		result.Add(guardrails.MaxRecipients(len(recipients), s.MaxRecipients))
 		result.Add(guardrails.RecipientsAllowed(recipients, s.RecipientAllowList))
+		// The guardrails decode the base64 payloads; the builder reuses the
+		// bytes instead of decoding them a second time.
+		var rawDecoded []byte
+		var attDecoded [][]byte
 		if in.Content.Raw != nil {
-			_, decisions := guardrails.RawEmail(in.Content.Raw.Data, s.EmailMaxRawBytes, s.SESSenderAddresses)
+			var decisions []guardrails.Decision
+			rawDecoded, decisions = guardrails.RawEmail(in.Content.Raw.Data, s.EmailMaxRawBytes, s.SESSenderAddresses)
 			for _, dec := range decisions {
 				result.Add(dec)
 			}
 		} else {
 			result.Add(guardrails.SenderAllowed(in.FromEmailAddress, s.SESSenderAddresses))
+			if len(in.Content.Simple.Attachments) > 0 {
+				atts := make([]guardrails.AttachmentInput, len(in.Content.Simple.Attachments))
+				for i, a := range in.Content.Simple.Attachments {
+					atts[i] = guardrails.AttachmentInput{FileName: a.FileName, RawContent: a.RawContent}
+				}
+				var decisions []guardrails.Decision
+				attDecoded, decisions = guardrails.EmailAttachments(atts, s.EmailMaxRawBytes)
+				for _, dec := range decisions {
+					result.Add(dec)
+				}
+			}
 		}
 		if d.Limiter != nil {
 			result.Add(d.Limiter.Check(ctx, "ses_send_email"))
@@ -63,7 +78,7 @@ func (d Deps) sendEmail() mcp.ToolHandlerFor[schemas.SendEmailInput, SendEmailOu
 			return res, SendEmailOutput{}, nil
 		}
 
-		call := buildSendEmail(in, s.SESConfigurationSet, s.SESReplyTo)
+		call := buildSendEmail(in, s.SESConfigurationSet, s.SESReplyTo, rawDecoded, attDecoded)
 		if in.DryRun {
 			out.WouldCall = call
 			return nil, out, nil
@@ -80,8 +95,10 @@ func (d Deps) sendEmail() mcp.ToolHandlerFor[schemas.SendEmailInput, SendEmailOu
 }
 
 // buildSendEmail maps the tool input onto the SDK input, injecting the
-// server-owned fields (PRD 5.1 rule 2).
-func buildSendEmail(in schemas.SendEmailInput, configurationSet, defaultReplyTo string) *sesv2.SendEmailInput {
+// server-owned fields (PRD 5.1 rule 2). rawDecoded and attDecoded are the
+// bytes the guardrails already decoded; attDecoded is index-aligned with the
+// Simple attachments.
+func buildSendEmail(in schemas.SendEmailInput, configurationSet, defaultReplyTo string, rawDecoded []byte, attDecoded [][]byte) *sesv2.SendEmailInput {
 	call := &sesv2.SendEmailInput{
 		FromEmailAddress: aws.String(in.FromEmailAddress),
 		Content:          &sestypes.EmailContent{},
@@ -108,8 +125,7 @@ func buildSendEmail(in schemas.SendEmailInput, configurationSet, defaultReplyTo 
 		})
 	}
 	if in.Content.Raw != nil {
-		raw, _ := base64.StdEncoding.DecodeString(in.Content.Raw.Data) // validated by guardrails
-		call.Content.Raw = &sestypes.RawMessage{Data: raw}
+		call.Content.Raw = &sestypes.RawMessage{Data: rawDecoded}
 		return call
 	}
 	simple := in.Content.Simple
@@ -126,11 +142,25 @@ func buildSendEmail(in schemas.SendEmailInput, configurationSet, defaultReplyTo 
 			msg.Body.Html = content(simple.Body.HTML)
 		}
 	}
-	for _, a := range simple.Attachments {
-		raw, _ := base64.StdEncoding.DecodeString(a.RawContent)
-		att := sestypes.Attachment{FileName: aws.String(a.FileName), RawContent: raw}
+	for i, a := range simple.Attachments {
+		att := sestypes.Attachment{FileName: aws.String(a.FileName)}
+		if i < len(attDecoded) {
+			att.RawContent = attDecoded[i]
+		}
 		if a.ContentType != "" {
 			att.ContentType = aws.String(a.ContentType)
+		}
+		if a.ContentDescription != "" {
+			att.ContentDescription = aws.String(a.ContentDescription)
+		}
+		if a.ContentDisposition != "" {
+			att.ContentDisposition = sestypes.AttachmentContentDisposition(a.ContentDisposition)
+		}
+		if a.ContentId != "" {
+			att.ContentId = aws.String(a.ContentId)
+		}
+		if a.ContentTransferEncoding != "" {
+			att.ContentTransferEncoding = sestypes.AttachmentContentTransferEncoding(a.ContentTransferEncoding)
 		}
 		msg.Attachments = append(msg.Attachments, att)
 	}
