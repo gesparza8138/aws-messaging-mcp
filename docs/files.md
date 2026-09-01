@@ -34,6 +34,17 @@ CloudFront signature in the URL is the access control.
 | Every link should die | `go run ./cmd/ops rotate-signing-key --stage prod` + redeploy: the key-group swap invalidates all outstanding URLs |
 | Nothing to do | Objects self-delete daily once their expiry passes (the `files-cleanup` schedule) |
 
+## Attaching a shared object to an email
+
+A shared object can go out as an email attachment without being uploaded
+again: pass its key as `RawContentKey` in a `ses_send_email` attachment
+(`ContentDisposition: INLINE` plus a `ContentId` makes it a `cid:` image) and
+the server reads the bytes from the bucket itself — they never pass through
+the model. The caller needs `msg/read` as well as `msg/email:send`, the key
+must be under `shared/`, and the object must fit the 10 MB attachment budget.
+An object whose expiry has passed is refused even though the daily cleanup
+has not deleted it yet — the link is dead, so the attachment is too.
+
 ## What is and is not behind CloudFront
 
 Only the **files bucket** sits behind CloudFront, locked to the distribution

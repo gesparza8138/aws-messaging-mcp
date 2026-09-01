@@ -452,6 +452,38 @@ func TestSESRawDryRunThroughFullChain(t *testing.T) {
 	}
 }
 
+// TestSESAttachByReferenceThroughFullChain proves an attachment carrying only
+// RawContentKey survives the SDK's *input* validation — RawContent stopped
+// being a required property when the reference form was added — and that the
+// stage-without-a-files-store refusal reaches the client as a readable tool
+// error. This fixture registers the SES tools only, which is exactly that
+// stage.
+func TestSESAttachByReferenceThroughFullChain(t *testing.T) {
+	f := newFixtureWithSES(t)
+	result, err := emailSession(t, f).CallTool(context.Background(), &mcp.CallToolParams{Name: "ses_send_email", Arguments: map[string]any{
+		"FromEmailAddress": "mcp-dev@example.com",
+		"Destination":      map[string]any{"ToAddresses": []string{"owner@example.com"}},
+		"Content": map[string]any{"Simple": map[string]any{
+			"Subject": map[string]any{"Data": "s"},
+			"Body":    map[string]any{"Text": map[string]any{"Data": "b"}},
+			"Attachments": []any{map[string]any{
+				"FileName": "report.pdf", "ContentType": "application/pdf",
+				"RawContentKey": "shared/abc/report.pdf",
+			}},
+		}},
+		"DryRun": true,
+	}})
+	if err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	if !result.IsError {
+		t.Fatalf("a stage with no files store must refuse the reference: %+v", result)
+	}
+	if text := result.Content[0].(*mcp.TextContent).Text; !strings.Contains(text, "not configured") {
+		t.Fatalf("error text: %q", text)
+	}
+}
+
 type stubSES struct{}
 
 func (stubSES) SendEmail(context.Context, *sesv2.SendEmailInput, ...func(*sesv2.Options)) (*sesv2.SendEmailOutput, error) {
