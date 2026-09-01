@@ -1,10 +1,12 @@
 package mcpserver
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
 	"errors"
+	"io"
 	"strings"
 	"testing"
 	"time"
@@ -22,16 +24,23 @@ import (
 )
 
 type fakeFiles struct {
-	putIn    *s3.PutObjectInput
-	putErr   error
-	headMeta map[string]string
-	headErr  error
-	copyIn   *s3.CopyObjectInput
-	copyErr  error
-	delIn    *s3.DeleteObjectInput
-	delErr   error
-	listKeys []string
-	listErr  error
+	putIn      *s3.PutObjectInput
+	putErr     error
+	headMeta   map[string]string
+	headSize   int64
+	headErr    error
+	headCalls  int
+	getIn      *s3.GetObjectInput
+	getBody    []byte
+	getErr     error
+	getReadErr error
+	getCalls   int
+	copyIn     *s3.CopyObjectInput
+	copyErr    error
+	delIn      *s3.DeleteObjectInput
+	delErr     error
+	listKeys   []string
+	listErr    error
 }
 
 func (f *fakeFiles) PutObject(_ context.Context, in *s3.PutObjectInput, _ ...func(*s3.Options)) (*s3.PutObjectOutput, error) {
@@ -40,11 +49,32 @@ func (f *fakeFiles) PutObject(_ context.Context, in *s3.PutObjectInput, _ ...fun
 }
 
 func (f *fakeFiles) HeadObject(context.Context, *s3.HeadObjectInput, ...func(*s3.Options)) (*s3.HeadObjectOutput, error) {
+	f.headCalls++
 	if f.headErr != nil {
 		return nil, f.headErr
 	}
-	return &s3.HeadObjectOutput{Metadata: f.headMeta, ContentType: aws.String("application/pdf")}, nil
+	return &s3.HeadObjectOutput{Metadata: f.headMeta, ContentLength: aws.Int64(f.headSize),
+		ContentType: aws.String("application/pdf")}, nil
 }
+
+// GetObject counts its calls so a test can assert the size and expiry checks
+// refused the object before its bytes were ever downloaded.
+func (f *fakeFiles) GetObject(_ context.Context, in *s3.GetObjectInput, _ ...func(*s3.Options)) (*s3.GetObjectOutput, error) {
+	f.getCalls++
+	f.getIn = in
+	if f.getErr != nil {
+		return nil, f.getErr
+	}
+	if f.getReadErr != nil {
+		return &s3.GetObjectOutput{Body: io.NopCloser(failingReader{f.getReadErr})}, nil
+	}
+	return &s3.GetObjectOutput{Body: io.NopCloser(bytes.NewReader(f.getBody))}, nil
+}
+
+// failingReader stands in for a body that dies mid-transfer.
+type failingReader struct{ err error }
+
+func (r failingReader) Read([]byte) (int, error) { return 0, r.err }
 
 func (f *fakeFiles) CopyObject(_ context.Context, in *s3.CopyObjectInput, _ ...func(*s3.Options)) (*s3.CopyObjectOutput, error) {
 	f.copyIn = in

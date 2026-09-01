@@ -2,7 +2,7 @@
 
 # `ses_send_email`
 
-Send an email via Amazon SES (sesv2 SendEmail shape); requires msg/email:send. Supports DryRun. Embed images with Simple attachments (ContentDisposition INLINE plus a ContentId the HTML cites as cid:) rather than hand-building Raw MIME; SES assembles the message itself. Raw content and decoded attachments share a 10 MB budget by default, and SES caps the assembled message at 40 MB. Verify payload integrity with ServerMetadata.content_digests (SHA-256 and byte count per attachment, or for the raw message) rather than re-reading the echoed bytes.
+Send an email via Amazon SES (sesv2 SendEmail shape); requires msg/email:send. Supports DryRun. Embed images with Simple attachments (ContentDisposition INLINE plus a ContentId the HTML cites as cid:) rather than hand-building Raw MIME; SES assembles the message itself. An attachment already in the files bucket is attached by key (RawContentKey from files_put_object or files_list_objects) instead of inline bytes; that path also requires msg/read. Raw content and decoded attachments share a 10 MB budget by default, and SES caps the assembled message at 40 MB. Verify payload integrity with ServerMetadata.content_digests (SHA-256 and byte count per attachment, or for the raw message) rather than re-reading the echoed bytes.
 
 ## Input schema
 
@@ -62,13 +62,16 @@ Send an email via Amazon SES (sesv2 SendEmail shape); requires msg/email:send. S
                     "type": "string"
                   },
                   "RawContent": {
-                    "description": "Attachment bytes, base64-encoded; decoded attachments and Raw content share the server budget (10 MB decoded by default), and SES caps the assembled message at 40 MB",
+                    "description": "Attachment bytes, base64-encoded; exactly one of RawContent or RawContentKey must be set. Decoded attachments and Raw content share the server budget (10 MB decoded by default), and SES caps the assembled message at 40 MB",
+                    "type": "string"
+                  },
+                  "RawContentKey": {
+                    "description": "Key of an object already in the files bucket (shared/... from files_put_object or files_list_objects) to attach instead of RawContent; exactly one of the two must be set. Requires msg/read as well as msg/email:send, and the object must still be within its expiry and inside the attachment budget",
                     "type": "string"
                   }
                 },
                 "required": [
-                  "FileName",
-                  "RawContent"
+                  "FileName"
                 ],
                 "type": "object"
               },

@@ -10,9 +10,11 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/service/pinpointsmsvoicev2"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
@@ -61,6 +63,10 @@ func (stubFiles) PutObject(context.Context, *s3.PutObjectInput, ...func(*s3.Opti
 
 func (stubFiles) HeadObject(context.Context, *s3.HeadObjectInput, ...func(*s3.Options)) (*s3.HeadObjectOutput, error) {
 	return nil, nil
+}
+
+func (stubFiles) GetObject(context.Context, *s3.GetObjectInput, ...func(*s3.Options)) (*s3.GetObjectOutput, error) {
+	return &s3.GetObjectOutput{Body: io.NopCloser(strings.NewReader(""))}, nil
 }
 
 func (stubFiles) CopyObject(context.Context, *s3.CopyObjectInput, ...func(*s3.Options)) (*s3.CopyObjectOutput, error) {

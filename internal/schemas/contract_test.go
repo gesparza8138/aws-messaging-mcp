@@ -23,8 +23,10 @@ var eumServerInjected = []string{"ConfigurationSetName", "ProtectConfigurationId
 // toolOnly are schema fields with no SDK counterpart by design. DryRun keeps
 // the M2 server-side semantics on every send tool (the EUM APIs have their
 // own DryRun field, but it is server-controlled — plan M3-2); MediaUpload is
-// the inline-attachment convenience.
-var toolOnly = map[string]bool{"DryRun": true, "MediaUpload": true}
+// the inline-attachment convenience; RawContentKey is its email counterpart —
+// a files-bucket key the server reads and resolves into the SDK's RawContent
+// before the call is built, so nothing new reaches SES.
+var toolOnly = map[string]bool{"DryRun": true, "MediaUpload": true, "RawContentKey": true}
 
 func assertFieldsExist(t *testing.T, schema, sdk reflect.Type) {
 	t.Helper()
