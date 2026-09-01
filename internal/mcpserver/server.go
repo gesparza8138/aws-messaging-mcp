@@ -70,7 +70,7 @@ func NewServer(d Deps) *mcp.Server {
 	if d.SES != nil {
 		mcp.AddTool(server, &mcp.Tool{
 			Name:        "ses_send_email",
-			Description: "Send an email via Amazon SES (sesv2 SendEmail shape); requires msg/email:send. Supports DryRun.",
+			Description: "Send an email via Amazon SES (sesv2 SendEmail shape); requires msg/email:send. Supports DryRun. Embed images with Simple attachments (ContentDisposition INLINE plus a ContentId the HTML cites as cid:) rather than hand-building Raw MIME; SES assembles the message itself. Raw content and decoded attachments share a 10 MB budget by default, and SES caps the assembled message at 40 MB.",
 		}, d.sendEmail())
 		mcp.AddTool(server, &mcp.Tool{
 			Name:        "ses_list_email_identities",

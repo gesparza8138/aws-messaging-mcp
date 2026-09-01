@@ -2,7 +2,7 @@
 
 # `ses_send_email`
 
-Send an email via Amazon SES (sesv2 SendEmail shape); requires msg/email:send. Supports DryRun.
+Send an email via Amazon SES (sesv2 SendEmail shape); requires msg/email:send. Supports DryRun. Embed images with Simple attachments (ContentDisposition INLINE plus a ContentId the HTML cites as cid:) rather than hand-building Raw MIME; SES assembles the message itself. Raw content and decoded attachments share a 10 MB budget by default, and SES caps the assembled message at 40 MB.
 
 ## Input schema
 
@@ -19,7 +19,7 @@ Send an email via Amazon SES (sesv2 SendEmail shape); requires msg/email:send. S
           "description": "Complete MIME message, base64-encoded",
           "properties": {
             "Data": {
-              "description": "Complete MIME message, base64-encoded",
+              "description": "Complete MIME message, base64-encoded; shares the server budget with attachments (10 MB decoded by default), and SES caps the assembled message at 40 MB",
               "type": "string"
             }
           },
@@ -39,6 +39,22 @@ Send an email via Amazon SES (sesv2 SendEmail shape); requires msg/email:send. S
               "items": {
                 "additionalProperties": false,
                 "properties": {
+                  "ContentDescription": {
+                    "description": "Human-readable description of the attachment",
+                    "type": "string"
+                  },
+                  "ContentDisposition": {
+                    "description": "Either ATTACHMENT (default) or INLINE; INLINE with ContentId lets HTML reference the image as \u003cimg src=\"cid:...\"\u003e. Case-sensitive.",
+                    "type": "string"
+                  },
+                  "ContentId": {
+                    "description": "Content-ID the HTML body cites as cid:\u003cvalue\u003e; pair it with ContentDisposition INLINE",
+                    "type": "string"
+                  },
+                  "ContentTransferEncoding": {
+                    "description": "BASE64 (default), QUOTED_PRINTABLE, or SEVEN_BIT; case-sensitive",
+                    "type": "string"
+                  },
                   "ContentType": {
                     "type": "string"
                   },
@@ -46,7 +62,7 @@ Send an email via Amazon SES (sesv2 SendEmail shape); requires msg/email:send. S
                     "type": "string"
                   },
                   "RawContent": {
-                    "description": "Attachment bytes, base64-encoded",
+                    "description": "Attachment bytes, base64-encoded; decoded attachments and Raw content share the server budget (10 MB decoded by default), and SES caps the assembled message at 40 MB",
                     "type": "string"
                   }
                 },

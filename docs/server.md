@@ -63,7 +63,7 @@ field is server-controlled and never exposed.
 
 | Tool | Scope | Behaviour |
 | --- | --- | --- |
-| `ses_send_email` | `msg/email:send` | Mirrors `sesv2 SendEmail` (`Simple` or `Raw`, exactly one). Guardrails: sender allow-list (or the `From` inside raw MIME), recipient allow-list, max recipients, raw-size cap, rate limits. Injected: `ConfigurationSetName` (event trail), default `ReplyToAddresses` |
+| `ses_send_email` | `msg/email:send` | Mirrors `sesv2 SendEmail` (`Simple` or `Raw`, exactly one). Guardrails: sender allow-list (or the `From` inside raw MIME), recipient allow-list, max recipients, the raw ladder (`raw_base64` → `raw_size` → `raw_mime` → `sender_allow_list`, each stage its own decision), attachment decoding and combined size (`attachment_base64`, `attachment_size`, same `EMAIL_MAX_RAW_BYTES` budget), rate limits. Attachments may be `INLINE` with a `ContentId` for `cid:` images — SES assembles the MIME. Injected: `ConfigurationSetName` (event trail), default `ReplyToAddresses` |
 | `ses_list_email_identities` | `msg/read` | Verified sender identities |
 | `ses_get_account` | `msg/read` | Sandbox/production flag and quotas |
 
