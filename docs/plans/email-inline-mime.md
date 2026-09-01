@@ -1,8 +1,9 @@
 # Inline-MIME plan — make `cid:` images actually render
 
-Status: **planned**. PR A (this plan, the docs correction, and the
-non-blocking `inline_not_rendered` warning) is shipped; PRs B–E are not
-started. Post-M5 work on `ses_send_email` only ([PRD](../PRD.md) §5.3, §8):
+Status: **in progress**. PR A (this plan, the docs correction, and the
+non-blocking `inline_not_rendered` warning) and PR B (the `internal/mimebuild`
+assembler plus the inline guardrails, both unwired) are shipped; PRs C–E are
+not started. Post-M5 work on `ses_send_email` only ([PRD](../PRD.md) §5.3, §8):
 no new tools, no infrastructure, no new environment variable. It reopens
 what [email-composition.md](email-composition.md) claimed to have closed
 (EC-13) after a client proved the claim false in production. Exit criteria:
@@ -198,7 +199,7 @@ has opinions) arriving through a different door.
 | PR | Title | Contents | Status |
 | --- | --- | --- | --- |
 | A | `fix: correct the inline-CID claim and warn callers` | This plan; the tool description, `internal/schemas` doc comments, PRD §5.3, `docs/server.md`, `docs/files.md`, the e2e comment, and `email-composition.md` (EC-13, EC-14, §4) corrected; a non-blocking `inline_not_rendered` guardrail decision on any `INLINE`/`ContentId` attachment; PRD Appendix C row | **shipped** |
-| B | `feat: internal/mimebuild multipart assembler` | The assembler and the tree walker, plus `internal/guardrails/email.go` string validation. Unwired: nothing calls it, `ses_send_email` behaves exactly as it does today. Tests include the structural parse of §8 | planned |
+| B | `feat: internal/mimebuild multipart assembler` | The assembler and the tree walker, plus `internal/guardrails/email.go` string validation (`attachment_fields`, `inline_content_id`, `inline_needs_html`, `inline_cid_refs`). Unwired: nothing calls it, `ses_send_email` behaves exactly as it does today. Tests include the structural parse of §8 | **shipped** |
 | C | `feat: assemble multipart/related for inline attachments` | Wire the assembler into `sendEmail` behind the "any `INLINE` or `ContentId`" condition; clear `ReplyToAddresses` on that path; the assembled-size check (§9); remove the `inline_not_rendered` warning; correct every doc PR A corrected, again; e2e sends a real inline image and the owner confirms rendering | planned |
 | D | `feat: ServerMetadata.mime_structure` | The flat part list (§6) on `DryRun` and real sends, for both the assembled path and a caller-supplied `Content.Raw` (R3) | planned |
 | E | `feat: Content.Raw.DataKey` | Attach-by-reference for a whole raw MIME message (R2, EC-14), on the same read path as `RawContentKey` | planned |
@@ -231,3 +232,17 @@ is that we accepted a proxy (an SDK struct field) for the thing itself.
 - **No new environment variable and no infrastructure change**: both numbers
   already exist (`EMAIL_MAX_RAW_BYTES` in settings, 40 MB as SES's
   documented ceiling).
+
+## 10. Findings
+
+Continuing the EC-N sequence of
+[email-composition.md](email-composition.md) §2, which this plan reopened.
+
+| # | Finding | Consequence |
+| --- | --- | --- |
+| EC-15 | **`mime.QEncoding.Encode` splits a long value into several encoded words but joins them with a plain space, not a fold.** A 800-character subject is therefore one 800-character header line, and RFC 5322 caps a line at 998 octets. Folding the value at its own spaces is not a fix either: unfolding restores the space, so folding *unencoded* text inserts a space at every fold point, and a long value with no spaces has nowhere to fold | `encodeHeaderText` keeps `QEncoding.Encode` for the common case (it is the CRLF defence and it leaves plain ASCII readable) and re-encodes an over-long value as a run of encoded words joined by CRLF + space. Whitespace between adjacent encoded words is dropped when they are decoded, so the original string is rebuilt exactly. PR B |
+| EC-16 | **`multipart.Reader.NextPart` transparently decodes a quoted-printable body and hides the `Content-Transfer-Encoding` header.** A walker built on it describes a message no recipient receives, and reports byte counts that disagree with the ones the assembler reports for the very same bytes | `Walk` uses `NextRawPart`. This is what makes the Assemble → Walk round-trip test an assertion about the message rather than about the reader. PR B |
+| EC-17 | **`mime.ParseMediaType` and `mime.FormatMediaType` are the content-type validation we would otherwise have written.** A type carrying a CRLF is not `token/token`, so parsing refuses it before it can split the header block, and `FormatMediaType` returns `""` rather than an unusable header. Parsing the caller's `ContentType` instead of interpolating it also keeps a type that carries parameters (`text/calendar; method=REQUEST`) intact, which interpolation would have broken | `attachmentNode` parses, then re-emits with the `name` parameter added. §4's "filenames through `FormatMediaType`" turned out to cover content types too. PR B |
+| EC-18 | **`net/mail.ParseAddress` already refuses CR and LF anywhere in an address**, including inside a quoted display name, and `Address.String` quotes or encodes what it re-emits | The address defence is the parse itself; a separate CRLF pre-check would be unreachable code. §5 assigned "address round-tripping" to `internal/guardrails`, but it belongs where the header is written: the sender allow-list already parses `From`, the recipient guardrails already run, and a second decision would only duplicate them. The guardrail half of PR B is the four decisions that have no other home (`attachment_fields`, `inline_content_id`, `inline_needs_html`, `inline_cid_refs`). PR B |
+| EC-19 | **"Which attachments are inline" had to be decided, not assumed.** The reporting client set `ContentDisposition: INLINE` *and* `ContentId`, but nothing forces a caller to set both, and a part with a `ContentId` the HTML references has to be inside the `multipart/related` or the reported bug simply reappears for that caller | Both packages apply one rule: `INLINE` is inline, a `ContentId` with no disposition at all is inline, and an explicit `ATTACHMENT` wins (so a file can still carry a `Content-ID` without joining the related group). `guardrails.InlineAttachments` and `mimebuild.isInline` are written to the same rule so the checks cover exactly the parts the assembler will place inline. PR B |
+| EC-20 | **`crypto/rand.Text` (Go 1.24) gives boundaries with no error to handle**: 26 base32 characters, all legal in a boundary, well inside `multipart.Writer`'s 70-character limit | The default boundary generator is one line and cannot fail, which keeps the injectable `Message.Boundary` seam purely a determinism device rather than an error path. PR B |
