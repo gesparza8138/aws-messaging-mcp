@@ -509,7 +509,7 @@ func TestSESInlineAssemblyThroughFullChain(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Content.Raw.Data: %v", err)
 	}
-	if !strings.Contains(string(msg), "multipart/related") || !strings.Contains(string(msg), "Content-ID: <logo>") {
+	if !strings.Contains(string(msg), "multipart/related") || !strings.Contains(string(msg), "Content-ID: <logo@example.com>") {
 		t.Fatalf("the assembled message must put the image in a related group:\n%s", msg)
 	}
 	// One digest per attachment, plus one for the message they were assembled
@@ -534,7 +534,7 @@ func TestSESInlineAssemblyThroughFullChain(t *testing.T) {
 		t.Fatalf("the root part must be the related group: %v", root)
 	}
 	image := structure[len(structure)-1].(map[string]any)
-	if image["content_type"] != "image/png" || image["content_id"] != "logo" || image["disposition"] != "inline" {
+	if image["content_type"] != "image/png" || image["content_id"] != "logo@example.com" || image["disposition"] != "inline" {
 		t.Fatalf("the inline image must be described: %v", image)
 	}
 	if image["path"] != "1.2" {

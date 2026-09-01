@@ -2,7 +2,8 @@
 
 Living checklist of everything in flight or waiting on someone. Update it
 whenever an item lands (check it off with the date) or a new wait appears.
-Last updated: 2026-09-01 (inline CID shipped; sms send chain fixed).
+Last updated: 2026-09-01 (field report after v1.2.0: Content-IDs qualified,
+`ServerMetadata` schema opened; Gmail inline rendering confirmed).
 
 ## Owner actions
 
@@ -60,12 +61,15 @@ Last updated: 2026-09-01 (inline CID shipped; sms send chain fixed).
 
 ## Owner acceptance still open
 
-- [ ] **Open a real inline image and confirm it renders in the body** — this
-  is the actual acceptance criterion for the inline work and the one thing
-  no test can assert. The dev e2e sends one to the `E2E_RECIPIENT` inbox on
-  every run (subject `aws-messaging-mcp e2e …`, a 1-pixel PNG referenced as
-  `cid:e2e-pixel`). Check Gmail web and mobile, Apple Mail, and Outlook, and
-  record the date and results in
+- [ ] **Open a real inline image and confirm it renders in the body** —
+  **Gmail confirmed 2026-09-01** from a production field report: with a
+  qualified `ContentId` (`weekend-chart@…`) the image rendered in the body and
+  was not also attached, while the bare id in the same A/B did not render at
+  all — which is why the server now qualifies bare Content-IDs. **Still to
+  check: Apple Mail, Outlook, and Gmail's iOS/Android apps.** The dev e2e
+  sends one to the `E2E_RECIPIENT` inbox on every run (subject
+  `aws-messaging-mcp e2e …`, a 1-pixel PNG referenced as `cid:e2e-pixel`).
+  Record each date and result in
   [email-inline-mime.md](email-inline-mime.md) §8. The image must appear in
   the body flow and **not** also as an attachment.
 - [ ] **A real SMS is still unsendable** — refused with `RESOURCE_NOT_ACTIVE`

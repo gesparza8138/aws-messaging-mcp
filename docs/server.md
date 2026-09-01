@@ -55,7 +55,16 @@ Every `/mcp` call passes, in order:
 **`DryRun` contract** (all three send tools): guardrails run, nothing is
 sent, and the response carries `WouldCall` — the *exact* SDK input the real
 call would use, server-injected fields included. The EUM API's own `DryRun`
-field is server-controlled and never exposed.
+field is server-controlled and never exposed. **A dry run spends rate-limit
+budget**: the limiter is one of the guardrails, and it counts the call whether
+or not anything is sent. That is deliberate — a free dry run would turn the
+per-tool limit into something a caller can probe around — but it means a
+caller exercising `mime_structure` on dry runs can exhaust the hour without
+sending a message. `WouldCall` is the complete AWS SDK input struct, so it
+shows fields the tool's *input* schema deliberately does not accept
+(`Template`, `Headers`, `Feedback*`, `ListManagementOptions` are rejected or
+omitted by design — PRD §5.3): their presence in the echo is the SDK's shape,
+not an input schema lagging behind the API.
 
 **`ServerMetadata.content_digests`** (`ses_send_email`): a SHA-256 and a
 decoded byte count for every binary part the server received — `part: "raw"`
@@ -116,13 +125,46 @@ decides deliverability, and a diagnostic is not worth refusing a send over.
 A `Simple` send omits it too — SES assembles that one, so there is no tree
 for the server to describe.
 
+**Content-ID qualification** (`ses_send_email`, assembled sends only): RFC 2045
+defines `Content-ID` as a *msg-id*, whose grammar is `id-left "@" id-right` —
+the `@` is not optional. A bare `ContentId` is therefore qualified to
+`id@<sender-domain>` (the domain of the parsed `FromEmailAddress`) in the
+header **and** in every `cid:` reference to it in the HTML, because RFC 2392
+resolves a `cid:` URL against the whole Content-ID minus its brackets, so
+qualifying one without the other would only move the failure. An id supplied
+with an `@` is used exactly as given, and the HTML must reference that full
+form. Angle brackets stay optional either way.
+
+This is not pedantry about a grammar. Gmail enforces it: a controlled A/B from
+the field (2026-09-01, same message shape, `ContentId` the only variable)
+found `weekend-chart` accepted, delivered, and **silently degraded to an
+ordinary attachment**, while `weekend-chart@gabriel-esparza.com` rendered
+inline. Nothing in the send path can report the difference — the send
+succeeds, the digests match, and `mime_structure` shows a correct tree — which
+is why the server qualifies the id instead of leaving it as a rule for callers
+to remember ([plan](plans/email-inline-mime.md) §10, EC-30).
+
+**Schema compatibility.** `ServerMetadata` is declared **open to additional
+properties** in every tool output schema that carries one. The envelope grows —
+`content_digests` in v1.1.0, `mime_structure` in v1.2.0 — and clients cache
+tool schemas, so a client validates a new response against an old schema. That
+is not a cosmetic failure: v1.2.0's new field made a *successful* send fail the
+claude.ai connector's cached-schema validation with "must NOT have additional
+properties", discarding the whole response and the `MessageId` in it, so the
+caller saw an error for a message that was already delivered and a retry would
+have sent it twice. Schema evolution is a compatibility contract, so the
+standing rule is that **`ServerMetadata` changes are additive-only**: a new
+field may appear at any time and clients must tolerate unknown ones; an
+existing field is never removed or retyped in place. Only the envelope is
+open — every field that does exist stays fully described.
+
 ## The tools
 
 ### Email (SES)
 
 | Tool | Scope | Behaviour |
 | --- | --- | --- |
-| `ses_send_email` | `msg/email:send` | Mirrors `sesv2 SendEmail` (`Simple` or `Raw`, exactly one). Guardrails: sender allow-list (or the `From` inside raw MIME), recipient allow-list, max recipients, the raw ladder (`raw_base64` → `raw_size` → `raw_mime` → `sender_allow_list`, each stage its own decision), attachment decoding and combined size (`attachment_base64`, `attachment_size`, same `EMAIL_MAX_RAW_BYTES` budget), rate limits. `ContentDisposition: INLINE` with a `ContentId` (or a `ContentId` alone) renders as a `cid:` image: the server assembles that message itself — HTML part and inline parts as siblings inside a `multipart/related`, ordinary attachments outside it — and sends it as `Content.Raw`, because SES's own `Simple` assembly roots everything under `multipart/mixed` where a `cid:` never resolves ([plan](plans/email-inline-mime.md)). Write the `ContentId` with or without angle brackets; the HTML references the bare form. Those sends run four more guardrails (`attachment_fields`, `inline_content_id`, `inline_needs_html`, `inline_cid_refs` — a `cid:` the message does not declare is refused) plus `assembled_size` against SES's 40 MB ceiling. **Breaking change:** a `DryRun` of an inline send echoes `WouldCall.Content.Raw` — anything reading `WouldCall.Content.Simple.Attachments` for one now finds nothing there. Sends with no inline attachment are unchanged. An attachment may carry `RawContentKey` (a `shared/…` files-bucket key) instead of `RawContent`, and a whole raw message may carry `Content.Raw.DataKey` instead of `Content.Raw.Data` (exactly one of each pair) — the server reads those bytes itself; both paths also require `msg/read` (they are files-store reads), refuse keys outside `shared/` and objects past their expiry, and check the object's size before downloading it. A `DataKey` message runs the ladder from `raw_size` on: `raw_base64` is absent because nothing was base64-encoded, and `sender_allow_list` is decided *after* the read because the `From` header is inside the object — the recipient guardrails and the rate limiter still refuse before any S3 read. `ServerMetadata.content_digests` hashes each binary part it received, and `ServerMetadata.mime_structure` describes the part tree it will send. Injected: `ConfigurationSetName` (event trail), default `ReplyToAddresses` |
+| `ses_send_email` | `msg/email:send` | Mirrors `sesv2 SendEmail` (`Simple` or `Raw`, exactly one). Guardrails: sender allow-list (or the `From` inside raw MIME), recipient allow-list, max recipients, the raw ladder (`raw_base64` → `raw_size` → `raw_mime` → `sender_allow_list`, each stage its own decision), attachment decoding and combined size (`attachment_base64`, `attachment_size`, same `EMAIL_MAX_RAW_BYTES` budget), rate limits. `ContentDisposition: INLINE` with a `ContentId` (or a `ContentId` alone) renders as a `cid:` image: the server assembles that message itself — HTML part and inline parts as siblings inside a `multipart/related`, ordinary attachments outside it — and sends it as `Content.Raw`, because SES's own `Simple` assembly roots everything under `multipart/mixed` where a `cid:` never resolves ([plan](plans/email-inline-mime.md)). Write the `ContentId` with or without angle brackets; a bare id is qualified to `id@<sender-domain>` in both the header and the HTML's `cid:` references (above). Those sends run four more guardrails (`attachment_fields`, `inline_content_id`, `inline_needs_html`, `inline_cid_refs` — a `cid:` the message does not declare is refused) plus `assembled_size` against SES's 40 MB ceiling. **Breaking change:** a `DryRun` of an inline send echoes `WouldCall.Content.Raw` — anything reading `WouldCall.Content.Simple.Attachments` for one now finds nothing there. Sends with no inline attachment are unchanged. An attachment may carry `RawContentKey` (a `shared/…` files-bucket key) instead of `RawContent`, and a whole raw message may carry `Content.Raw.DataKey` instead of `Content.Raw.Data` (exactly one of each pair) — the server reads those bytes itself; both paths also require `msg/read` (they are files-store reads), refuse keys outside `shared/` and objects past their expiry, and check the object's size before downloading it. A `DataKey` message runs the ladder from `raw_size` on: `raw_base64` is absent because nothing was base64-encoded, and `sender_allow_list` is decided *after* the read because the `From` header is inside the object — the recipient guardrails and the rate limiter still refuse before any S3 read. `ServerMetadata.content_digests` hashes each binary part it received, and `ServerMetadata.mime_structure` describes the part tree it will send. Injected: `ConfigurationSetName` (event trail), default `ReplyToAddresses` |
 | `ses_list_email_identities` | `msg/read` | Verified sender identities |
 | `ses_get_account` | `msg/read` | Sandbox/production flag and quotas |
 

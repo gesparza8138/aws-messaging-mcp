@@ -2,7 +2,7 @@
 
 # `sms_send_text_message`
 
-Send an SMS via AWS End User Messaging (SendTextMessage shape); requires msg/sms:send. Supports DryRun.
+Send an SMS via AWS End User Messaging (SendTextMessage shape); requires msg/sms:send. Supports DryRun (counts against the send rate limit).
 
 ## Input schema
 
@@ -66,7 +66,6 @@ Send an SMS via AWS End User Messaging (SendTextMessage shape); requires msg/sms
       "type": "string"
     },
     "ServerMetadata": {
-      "additionalProperties": false,
       "properties": {
         "content_digests": {
           "items": {

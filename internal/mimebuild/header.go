@@ -8,6 +8,7 @@ import (
 	"mime"
 	"net/mail"
 	"net/textproto"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -252,3 +253,52 @@ func isInline(disposition, contentID string) bool {
 // characters, every one of them legal in a boundary, and the result stays well
 // inside multipart.Writer's 70 character limit.
 func defaultBoundary() string { return "----=_Part_" + rand.Text() }
+
+// qualifyContentIDs turns every bare Content-ID into the msg-id form the
+// header grammar actually requires. RFC 2045 defines Content-ID as a msg-id,
+// whose grammar is id-left "@" id-right - the "@" is not optional - and Gmail
+// enforces it: a message carrying Content-ID: <chart> is accepted and
+// delivered, but the cid: reference silently degrades to an ordinary
+// attachment, while <chart@example.com> renders inline. Reported from the
+// field with a controlled A/B (docs/plans/email-inline-mime.md).
+//
+// A bare id is qualified with the sender's domain, and every cid: reference
+// to it in the HTML is rewritten to match, because RFC 2392 resolves a cid:
+// URL against the full Content-ID minus its brackets - qualifying only the
+// header would orphan the references. Ids that already carry an "@" are left
+// exactly as given, as are their references.
+func qualifyContentIDs(m *Message) error {
+	domain := ""
+	for i, a := range m.Attachments {
+		if a.ContentID == "" {
+			continue
+		}
+		bare, err := normalizeContentID(a.ContentID)
+		if err != nil {
+			return err
+		}
+		if strings.Contains(bare, "@") {
+			m.Attachments[i].ContentID = bare
+			continue
+		}
+		if domain == "" {
+			parsed, err := mail.ParseAddress(m.From)
+			if err != nil {
+				return fmt.Errorf("cannot parse From address %q: %w", m.From, err)
+			}
+			if at := strings.LastIndex(parsed.Address, "@"); at >= 0 {
+				domain = parsed.Address[at+1:]
+			}
+			if domain == "" {
+				return fmt.Errorf("cannot derive a Content-ID domain from From address %q", m.From)
+			}
+		}
+		qualified := bare + "@" + domain
+		m.Attachments[i].ContentID = qualified
+		// Word-boundary on the id charset so "chart" never rewrites inside
+		// "chart2"; the (…|$) group is restored by the $2 in the replacement.
+		re := regexp.MustCompile(`cid:` + regexp.QuoteMeta(bare) + `([^A-Za-z0-9._@+-]|$)`)
+		m.HTML = re.ReplaceAllString(m.HTML, "cid:"+qualified+"$1")
+	}
+	return nil
+}

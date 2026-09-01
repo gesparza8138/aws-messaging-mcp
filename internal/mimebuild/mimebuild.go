@@ -141,6 +141,9 @@ func (n *node) isMultipart() bool { return strings.HasPrefix(n.mediaType, "multi
 // writes every header for us and none of this is reachable; the moment we
 // assemble, all of it is.
 func Assemble(m Message) ([]byte, []Part, error) {
+	if err := qualifyContentIDs(&m); err != nil {
+		return nil, nil, err
+	}
 	root, err := buildTree(m)
 	if err != nil {
 		return nil, nil, err

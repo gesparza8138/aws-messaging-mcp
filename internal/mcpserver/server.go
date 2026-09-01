@@ -17,7 +17,7 @@ import (
 )
 
 // Version is stamped into the MCP server implementation info.
-const Version = "1.2.0"
+const Version = "1.2.1"
 
 // Deps wires the tools to their backends. A nil SES (or EUM) leaves that
 // tool family unregistered (tests that only exercise the auth chain use this).
@@ -71,7 +71,7 @@ func NewServer(d Deps) *mcp.Server {
 		mcp.AddTool(server, &mcp.Tool{
 			Name:         "ses_send_email",
 			OutputSchema: sendEmailOutputSchema(),
-			Description:  "Send an email via Amazon SES (sesv2 SendEmail shape); requires msg/email:send. Supports DryRun. Inline (cid:) images work through Simple attachments: when an attachment is ContentDisposition INLINE, or carries a ContentId with no disposition at all, the server assembles a multipart/related message itself — the Html part and the image as siblings — and sends it as Content.Raw, so a cid:the-content-id reference in the Html body (the src of an img tag) renders the image in the body instead of the file arriving as an ordinary attachment. Give the ContentId with or without angle brackets (\"chart\" or \"<chart>\"); the HTML always references the bare form. A DryRun of such a send therefore echoes WouldCall.Content.Raw, not Content.Simple, because that is the exact call made. Sends with no inline attachment are unchanged: they go to SES as Content.Simple and SES assembles them. An attachment already in the files bucket is attached by key (RawContentKey from files_put_object or files_list_objects) instead of inline bytes, and a complete MIME message the same way (Content.Raw.DataKey instead of Content.Raw.Data, exactly one of the two) — which is how a message too large to emit as one base64 string is sent at all; both paths also require msg/read. Raw content and decoded attachments share a 10 MB budget by default, and SES caps the assembled message at 40 MB. Inspect the message before sending it with ServerMetadata.mime_structure: one flat entry per MIME part (path like 1.2.1, depth, content type, Content-ID, disposition, filename, encoded size) for the message the server assembled or the raw one it was given, so a DryRun shows whether the image really is a sibling of the Html part inside a multipart/related. Verify payload integrity with ServerMetadata.content_digests (SHA-256 and byte count per attachment, plus one for the assembled message, or for a caller-supplied raw message) rather than re-reading the echoed bytes.",
+			Description:  "Send an email via Amazon SES (sesv2 SendEmail shape); requires msg/email:send. Supports DryRun (counts against the send rate limit, so probing draws real budget). Inline (cid:) images work through Simple attachments: when an attachment is ContentDisposition INLINE, or carries a ContentId with no disposition at all, the server assembles a multipart/related message itself — the Html part and the image as siblings — and sends it as Content.Raw, so a cid:the-content-id reference in the Html body (the src of an img tag) renders the image in the body instead of the file arriving as an ordinary attachment. Give the ContentId with or without angle brackets; a bare id (\"chart\") is qualified to chart@<sender-domain> in both the Content-ID header and the HTML's cid: references, because the header grammar requires the @ and Gmail silently degrades a bare id to an ordinary attachment. An id supplied with an @ is used exactly as given and the HTML must reference that full form. A DryRun of such a send therefore echoes WouldCall.Content.Raw, not Content.Simple, because that is the exact call made. Sends with no inline attachment are unchanged: they go to SES as Content.Simple and SES assembles them. An attachment already in the files bucket is attached by key (RawContentKey from files_put_object or files_list_objects) instead of inline bytes, and a complete MIME message the same way (Content.Raw.DataKey instead of Content.Raw.Data, exactly one of the two) — which is how a message too large to emit as one base64 string is sent at all; both paths also require msg/read. Raw content and decoded attachments share a 10 MB budget by default, and SES caps the assembled message at 40 MB. Inspect the message before sending it with ServerMetadata.mime_structure: one flat entry per MIME part (path like 1.2.1, depth, content type, Content-ID, disposition, filename, encoded size) for the message the server assembled or the raw one it was given, so a DryRun shows whether the image really is a sibling of the Html part inside a multipart/related. Verify payload integrity with ServerMetadata.content_digests (SHA-256 and byte count per attachment, plus one for the assembled message, or for a caller-supplied raw message) rather than re-reading the echoed bytes.",
 		}, d.sendEmail())
 		mcp.AddTool(server, &mcp.Tool{
 			Name:        "ses_list_email_identities",
@@ -86,12 +86,12 @@ func NewServer(d Deps) *mcp.Server {
 		mcp.AddTool(server, &mcp.Tool{
 			Name:         "sms_send_text_message",
 			OutputSchema: outputSchemaFor[SendTextOutput]("sms_send_text_message"),
-			Description:  "Send an SMS via AWS End User Messaging (SendTextMessage shape); requires msg/sms:send. Supports DryRun.",
+			Description:  "Send an SMS via AWS End User Messaging (SendTextMessage shape); requires msg/sms:send. Supports DryRun (counts against the send rate limit).",
 		}, d.sendTextMessage())
 		mcp.AddTool(server, &mcp.Tool{
 			Name:         "sms_send_media_message",
 			OutputSchema: outputSchemaFor[SendMediaOutput]("sms_send_media_message"),
-			Description:  "Send an MMS with images via AWS End User Messaging (SendMediaMessage shape); requires msg/sms:send. Supports DryRun.",
+			Description:  "Send an MMS with images via AWS End User Messaging (SendMediaMessage shape); requires msg/sms:send. Supports DryRun (counts against the send rate limit).",
 		}, d.sendMediaMessage())
 		mcp.AddTool(server, &mcp.Tool{
 			Name:        "sms_describe_phone_numbers",
@@ -109,12 +109,14 @@ func NewServer(d Deps) *mcp.Server {
 			Description:  "Upload an inline file (≤4 MB) and get back a CloudFront-signed download link; requires msg/files:write. Supports DryRun.",
 		}, d.filesPutObject())
 		mcp.AddTool(server, &mcp.Tool{
-			Name:        "files_create_upload_url",
-			Description: "Presigned PUT URL for large files (≤500 MB, 15-minute validity); sign afterwards with files_create_signed_url; requires msg/files:write.",
+			Name:         "files_create_upload_url",
+			OutputSchema: outputSchemaFor[UploadURLOutput]("files_create_upload_url"),
+			Description:  "Presigned PUT URL for large files (≤500 MB, 15-minute validity); sign afterwards with files_create_signed_url; requires msg/files:write.",
 		}, d.filesCreateUploadURL())
 		mcp.AddTool(server, &mcp.Tool{
-			Name:        "files_create_signed_url",
-			Description: "Sign (or re-sign) a shared object into a CloudFront download link, optionally IP-restricted; requires msg/files:write.",
+			Name:         "files_create_signed_url",
+			OutputSchema: outputSchemaFor[SignedURLOutput]("files_create_signed_url"),
+			Description:  "Sign (or re-sign) a shared object into a CloudFront download link, optionally IP-restricted; requires msg/files:write.",
 		}, d.filesCreateSignedURL())
 		mcp.AddTool(server, &mcp.Tool{
 			Name:        "files_list_objects",

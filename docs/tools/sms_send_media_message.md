@@ -2,7 +2,7 @@
 
 # `sms_send_media_message`
 
-Send an MMS with images via AWS End User Messaging (SendMediaMessage shape); requires msg/sms:send. Supports DryRun.
+Send an MMS with images via AWS End User Messaging (SendMediaMessage shape); requires msg/sms:send. Supports DryRun (counts against the send rate limit).
 
 ## Input schema
 
@@ -101,7 +101,6 @@ Send an MMS with images via AWS End User Messaging (SendMediaMessage shape); req
       "type": "string"
     },
     "ServerMetadata": {
-      "additionalProperties": false,
       "properties": {
         "content_digests": {
           "items": {
