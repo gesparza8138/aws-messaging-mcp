@@ -1,6 +1,6 @@
 # Email composition plan — inline images, integrity, attach-by-reference
 
-Status: **approved (2026-08-31) — PR1 in flight**. Post-M5 work on
+Status: **approved (2026-08-31) — PR1 and PR2 implemented, PR3 next**. Post-M5 work on
 `ses_send_email` only ([PRD](../PRD.md) §5.3, §8): no new tools, and no
 infrastructure before PR3. It answers a gap
 report from a client that tried to send an email with an embedded image
@@ -30,14 +30,15 @@ Verbatim from the client that hit this, kept as the requirements source:
 | EC-5 | Neither the schema nor the tool description mentioned any size limit; the server's is 10 MB decoded and SES's own ceiling is 40 MB | Gap-report item (6): the model had to guess. Both numbers are now in the tool description and the `RawContent` / `Raw.Data` field descriptions. PR1 |
 | EC-6 | `DryRun` echoes `WouldCall` but nothing the client can check its bytes against | Gap-report item (4): a digest of what the server decoded is the cheap half of "prove it arrived intact". PR2 |
 | EC-7 | The files bucket and the email tool never compose (gap-report item (1)) | An attachment that names an object the server already holds skips the model's context entirely — but it crosses a PRD rule (server-injected content the caller did not send inline), so it needs the rule amended, not worked around. PR3 |
+| EC-8 | Found while writing PR2's full-chain test: the go-sdk infers `[]byte` as a JSON *array*, but `encoding/json` marshals it as a base64 *string*, and the SDK validates a tool's output against that inferred schema server-side. Every `ses_send_email` `DryRun` carrying binary content — any `Content.Raw`, any attachment — therefore failed validation and came back as a JSON-RPC error, not a result. Dating to M2 for `Raw`; the unit tests never saw it because they call the handler directly and bypass the SDK's validating wrapper | `DryRun` was unusable for exactly the payloads PR2 exists to verify. Fixed in PR2 by giving `ses_send_email` an explicit output schema (`jsonschema.For` with `[]byte` → `["null","string"]`); no other tool echoes `[]byte`. Regression tests go through the real MCP client. PR2 |
 
 ## 3. The three PRs
 
-| PR | Title | Contents | Deploys |
-| --- | --- | --- | --- |
-| 1 | `feat: native inline (CID) attachments and attachment guardrails` | The four SDK attachment fields in `internal/schemas`; `guardrails.EmailAttachments` (`attachment_base64`, `attachment_size`); split `RawEmail` decisions; guardrail-decoded bytes passed to `buildSendEmail` (no silent decode); size guidance in the schema, tool description, PRD §5.3/§8, and `docs/server.md` | — |
-| 2 | `feat: content digests in ServerMetadata` | SHA-256 digest and decoded byte count per attachment and for `Content.Raw`, returned in `ServerMetadata` on both `DryRun` and real sends, so a client can verify what the server actually decoded (EC-6) | — |
-| 3 | `feat: attach by reference from the files bucket` | `Attachments[].RawContentKey` (a files-bucket key the server reads and attaches server-side), its guardrails (key ownership, size against the same budget, content-type deny-list), the Lambda role's read path, and the PRD rule-7 amendment plus the Appendix C decision-log rows for this whole plan | dev, then a release to prod |
+| PR | Title | Contents | Deploys | Status |
+| --- | --- | --- | --- | --- |
+| 1 | `feat: native inline (CID) attachments and attachment guardrails` | The four SDK attachment fields in `internal/schemas`; `guardrails.EmailAttachments` (`attachment_base64`, `attachment_size`); split `RawEmail` decisions; guardrail-decoded bytes passed to `buildSendEmail` (no silent decode); size guidance in the schema, tool description, PRD §5.3/§8, and `docs/server.md` | — | implemented |
+| 2 | `feat: content digests in ServerMetadata` | SHA-256 digest and decoded byte count per attachment and for `Content.Raw`, returned in `ServerMetadata` on both `DryRun` and real sends, so a client can verify what the server actually decoded (EC-6); plus the `ses_send_email` output-schema fix that made a binary `DryRun` reachable at all (EC-8) | — | implemented |
+| 3 | `feat: attach by reference from the files bucket` | `Attachments[].RawContentKey` (a files-bucket key the server reads and attaches server-side), its guardrails (key ownership, size against the same budget, content-type deny-list), the Lambda role's read path, and the PRD rule-7 amendment plus the Appendix C decision-log rows for this whole plan | dev, then a release to prod | planned |
 
 ## 4. Out of scope
 

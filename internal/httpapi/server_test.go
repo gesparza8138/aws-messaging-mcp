@@ -3,6 +3,7 @@ package httpapi_test
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"io"
@@ -340,22 +341,30 @@ func TestPrincipalFromEmptyContext(t *testing.T) {
 
 var _ = io.EOF
 
-// sesDryRunThroughFullChain exercises an email tool end to end: HTTP, auth
-// middleware, scope check, guardrails, DryRun injection.
-func TestSESDryRunThroughFullChain(t *testing.T) {
-	f := newFixtureWithSES(t)
+// emailSession connects the real MCP client to a fixture carrying the SES
+// tools, over the full HTTP + auth chain.
+func emailSession(t *testing.T, f *fixture) *mcp.ClientSession {
+	t.Helper()
 	tok, _ := f.keys.Mint(testkeys.Claims{"scope": "msg/read msg/email:send"})
-	ctx := context.Background()
 	client := mcp.NewClient(&mcp.Implementation{Name: "test-client", Version: "0"}, nil)
 	transport := &mcp.StreamableClientTransport{
 		Endpoint:   f.srv.URL + "/mcp/",
 		HTTPClient: &http.Client{Transport: headerTransport{token: tok}},
 	}
-	session, err := client.Connect(ctx, transport, nil)
+	session, err := client.Connect(context.Background(), transport, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { session.Close() })
+	return session
+}
+
+// sesDryRunThroughFullChain exercises an email tool end to end: HTTP, auth
+// middleware, scope check, guardrails, DryRun injection.
+func TestSESDryRunThroughFullChain(t *testing.T) {
+	f := newFixtureWithSES(t)
+	ctx := context.Background()
+	session := emailSession(t, f)
 	tools, err := session.ListTools(ctx, nil)
 	if err != nil || len(tools.Tools) != 4 {
 		t.Fatalf("tools: %v %v", err, tools)
@@ -376,6 +385,70 @@ func TestSESDryRunThroughFullChain(t *testing.T) {
 	}
 	if out["WouldCall"] == nil {
 		t.Fatalf("WouldCall missing: %v", out)
+	}
+	if _, ok := meta["content_digests"]; ok {
+		t.Fatalf("a text-only email has no binary part to digest: %v", meta)
+	}
+}
+
+// TestSESContentDigestThroughFullChain proves the digest survives the JSON
+// round trip the client actually reads it from.
+func TestSESContentDigestThroughFullChain(t *testing.T) {
+	f := newFixtureWithSES(t)
+	png := []byte("\x89PNG not really a png")
+	result, err := emailSession(t, f).CallTool(context.Background(), &mcp.CallToolParams{Name: "ses_send_email", Arguments: map[string]any{
+		"FromEmailAddress": "mcp-dev@example.com",
+		"Destination":      map[string]any{"ToAddresses": []string{"owner@example.com"}},
+		"Content": map[string]any{"Simple": map[string]any{
+			"Subject": map[string]any{"Data": "s"},
+			"Body":    map[string]any{"Html": map[string]any{"Data": `<img src="cid:logo">`}},
+			"Attachments": []any{map[string]any{
+				"FileName": "logo.png", "ContentType": "image/png", "ContentDisposition": "INLINE", "ContentId": "logo",
+				"RawContent": base64.StdEncoding.EncodeToString(png),
+			}},
+		}},
+		"DryRun": true,
+	}})
+	if err != nil || result.IsError {
+		t.Fatalf("call: %v %+v", err, result)
+	}
+	out := structured(t, result)
+	digests := out["ServerMetadata"].(map[string]any)["content_digests"].([]any)
+	if len(digests) != 1 {
+		t.Fatalf("digests: %v", digests)
+	}
+	sum := sha256.Sum256(png)
+	first := digests[0].(map[string]any)
+	if first["part"] != "attachment[0]:logo.png" || first["sha256"] != hex.EncodeToString(sum[:]) || first["bytes"] != float64(len(png)) {
+		t.Fatalf("digest: %v", first)
+	}
+	// The echo carries the decoded bytes back as base64, which only validates
+	// against the output schema because of the []byte override in mcpserver.
+	att := out["WouldCall"].(map[string]any)["Content"].(map[string]any)["Simple"].(map[string]any)["Attachments"].([]any)[0]
+	if att.(map[string]any)["RawContent"] != base64.StdEncoding.EncodeToString(png) {
+		t.Fatalf("WouldCall attachment bytes: %v", att)
+	}
+}
+
+// TestSESRawDryRunThroughFullChain guards the same output-schema override on
+// the Raw path, whose Data field is the other []byte in the DryRun echo.
+func TestSESRawDryRunThroughFullChain(t *testing.T) {
+	f := newFixtureWithSES(t)
+	mime := []byte("From: mcp-dev@example.com\r\nTo: owner@example.com\r\nSubject: s\r\n\r\nb\r\n")
+	result, err := emailSession(t, f).CallTool(context.Background(), &mcp.CallToolParams{Name: "ses_send_email", Arguments: map[string]any{
+		"FromEmailAddress": "mcp-dev@example.com",
+		"Destination":      map[string]any{"ToAddresses": []string{"owner@example.com"}},
+		"Content":          map[string]any{"Raw": map[string]any{"Data": base64.StdEncoding.EncodeToString(mime)}},
+		"DryRun":           true,
+	}})
+	if err != nil || result.IsError {
+		t.Fatalf("call: %v %+v", err, result)
+	}
+	out := structured(t, result)
+	digests := out["ServerMetadata"].(map[string]any)["content_digests"].([]any)
+	sum := sha256.Sum256(mime)
+	if len(digests) != 1 || digests[0].(map[string]any)["part"] != "raw" || digests[0].(map[string]any)["sha256"] != hex.EncodeToString(sum[:]) {
+		t.Fatalf("raw digest: %v", digests)
 	}
 }
 
