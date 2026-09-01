@@ -22,6 +22,7 @@ import (
 	"github.com/gesparza8138/aws-messaging-mcp/internal/auth"
 	"github.com/gesparza8138/aws-messaging-mcp/internal/guardrails"
 	"github.com/gesparza8138/aws-messaging-mcp/internal/httpapi"
+	"github.com/gesparza8138/aws-messaging-mcp/internal/mimebuild"
 	"github.com/gesparza8138/aws-messaging-mcp/internal/schemas"
 	"github.com/gesparza8138/aws-messaging-mcp/internal/settings"
 )
@@ -297,11 +298,17 @@ func TestSendEmailDigestsOnRealSendNotOnBlocked(t *testing.T) {
 func TestContentDigestsSkipUndecodedAttachments(t *testing.T) {
 	atts := []schemas.Attachment{{FileName: "bad.png"}, {FileName: "ok.txt"}}
 	want := []ContentDigest{{Part: "attachment[1]:ok.txt", Bytes: 2, SHA256: sha256Hex([]byte("ok"))}}
-	if got := contentDigests(nil, atts, [][]byte{nil, []byte("ok")}); !reflect.DeepEqual(got, want) {
+	if got := contentDigests(nil, atts, [][]byte{nil, []byte("ok")}, nil); !reflect.DeepEqual(got, want) {
 		t.Fatalf("digests: %+v want %+v", got, want)
 	}
-	if got := contentDigests(nil, atts, nil); got != nil {
+	if got := contentDigests(nil, atts, nil, nil); got != nil {
 		t.Fatalf("no decoded bytes must digest nothing: %+v", got)
+	}
+	// "raw" is the caller's own Content.Raw, so it wins the early return; the
+	// two are never both set, and reserving the name is what keeps a server
+	// assembled message from erasing the per-attachment digests.
+	if got := contentDigests([]byte("mime"), atts, [][]byte{nil, []byte("ok")}, []byte("assembled")); len(got) != 1 || got[0].Part != "raw" {
+		t.Fatalf("a caller-supplied raw message digests as one part: %+v", got)
 	}
 }
 
@@ -361,20 +368,25 @@ func TestListIdentitiesAndGetAccount(t *testing.T) {
 	}
 }
 
+// The Simple path, which is every send with no inline attachment: SES still
+// assembles the message from the fields below. The attachment here declares an
+// ATTACHMENT disposition *and* a ContentId, the one shape that carries a
+// Content-ID without joining the related group; the inline case is a
+// handler-level test, because assembling is the handler's decision.
 func TestBuildSendEmailCharsetsAndAttachments(t *testing.T) {
 	in := simpleInput(false)
 	in.Content.Simple.Subject.Charset = "UTF-8"
-	in.Content.Simple.Body.HTML = &schemas.Content{Data: `<img src="cid:logo">`, Charset: "UTF-8"}
+	in.Content.Simple.Body.HTML = &schemas.Content{Data: `<p>report</p>`, Charset: "UTF-8"}
 	in.Content.Simple.Attachments = []schemas.Attachment{{
 		FileName:                "logo.png",
 		ContentType:             "image/png",
 		RawContent:              base64.StdEncoding.EncodeToString([]byte("png")),
 		ContentDescription:      "the logo",
-		ContentDisposition:      "INLINE",
+		ContentDisposition:      "ATTACHMENT",
 		ContentId:               "logo",
 		ContentTransferEncoding: "BASE64",
 	}}
-	call := buildSendEmail(in, "", "", nil, [][]byte{[]byte("png")})
+	call := buildSendEmail(sendEmailParams{in: in, attDecoded: [][]byte{[]byte("png")}})
 	if aws.ToString(call.Content.Simple.Subject.Charset) != "UTF-8" || call.Content.Simple.Body.Html == nil {
 		t.Fatalf("charset/html: %+v", call.Content.Simple)
 	}
@@ -385,8 +397,8 @@ func TestBuildSendEmailCharsetsAndAttachments(t *testing.T) {
 	if aws.ToString(att.ContentType) != "image/png" || string(att.RawContent) != "png" {
 		t.Fatalf("attachment bytes/type: %+v", att)
 	}
-	if att.ContentDisposition != sestypes.AttachmentContentDispositionInline || aws.ToString(att.ContentId) != "logo" {
-		t.Fatalf("inline disposition/cid: %+v", att)
+	if att.ContentDisposition != sestypes.AttachmentContentDispositionAttachment || aws.ToString(att.ContentId) != "logo" {
+		t.Fatalf("disposition/cid: %+v", att)
 	}
 	if att.ContentTransferEncoding != sestypes.AttachmentContentTransferEncodingBase64 || aws.ToString(att.ContentDescription) != "the logo" {
 		t.Fatalf("transfer encoding/description: %+v", att)
@@ -594,33 +606,277 @@ func TestSendEmailAttachByReferenceRefusals(t *testing.T) {
 	}
 }
 
-func TestSendEmailInlineAttachmentThroughGuardrails(t *testing.T) {
-	ses := &fakeSES{}
-	in := simpleInput(true)
+// pngBytes stands in for an inline image: not a real PNG, but binary enough
+// that base64 is the only encoding that can carry it.
+var pngBytes = []byte{0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a, 'p', 'i', 'x'}
+
+// inlineInput is a Text + Html message with one image the HTML references, the
+// shape that makes the server assemble the MIME itself.
+func inlineInput(dryRun bool) schemas.SendEmailInput {
+	in := simpleInput(dryRun)
+	in.Content.Simple.Body.HTML = &schemas.Content{Data: `<p>chart: <img src="cid:logo"></p>`}
 	in.Content.Simple.Attachments = []schemas.Attachment{{
 		FileName:           "logo.png",
 		ContentType:        "image/png",
-		RawContent:         base64.StdEncoding.EncodeToString([]byte("png")),
+		RawContent:         base64.StdEncoding.EncodeToString(pngBytes),
 		ContentDisposition: "INLINE",
 		ContentId:          "logo",
 	}}
-	_, out, _ := testDeps(ses).sendEmail()(authedCtx("msg/email:send"), nil, in)
-	if out.WouldCall == nil || len(out.WouldCall.Content.Simple.Attachments) != 1 {
-		t.Fatalf("would-call attachments: %+v", out.WouldCall)
+	return in
+}
+
+// assembledFrom returns the message the server built, having first insisted the
+// call carries it as Content.Raw and nothing else. Reading assembled bytes back
+// is the point of these tests: everything in this package used to assert on the
+// request we would send, which is exactly how the inline-CID defect shipped
+// (docs/plans/email-inline-mime.md §8).
+func assembledFrom(t *testing.T, call *sesv2.SendEmailInput) []byte {
+	t.Helper()
+	if call == nil || call.Content == nil || call.Content.Raw == nil {
+		t.Fatalf("an inline send must be assembled into Content.Raw: %+v", call)
 	}
-	if string(out.WouldCall.Content.Simple.Attachments[0].RawContent) != "png" {
-		t.Fatalf("guardrail-decoded bytes must reach the call: %+v", out.WouldCall.Content.Simple.Attachments[0])
+	if call.Content.Simple != nil {
+		t.Fatalf("an assembled send must not also carry Content.Simple: %+v", call.Content.Simple)
 	}
-	var sized, warned bool
+	return call.Content.Raw.Data
+}
+
+// parts walks the assembled message into mimebuild's flat part list, where a
+// dotted path says who is whose sibling.
+func parts(t *testing.T, msg []byte) []mimebuild.Part {
+	t.Helper()
+	walked, err := mimebuild.Walk(msg, 10, 100)
+	if err != nil {
+		t.Fatalf("cannot walk the assembled message: %v\n%s", err, msg)
+	}
+	return walked
+}
+
+// TestSendEmailInlineAttachmentIsAssembled is the defect's regression test: an
+// INLINE attachment with a ContentId now leaves as a multipart/related whose
+// children are the HTML part and the image, which is the tree a cid: reference
+// needs to resolve.
+func TestSendEmailInlineAttachmentIsAssembled(t *testing.T) {
+	ses := &fakeSES{}
+	_, out, _ := testDeps(ses).sendEmail()(authedCtx("msg/email:send"), nil, inlineInput(true))
+	msg := assembledFrom(t, out.WouldCall)
+
+	// Text and Html both set, so the alternative is the root and the related
+	// group stands where the HTML part alone would have.
+	related := ""
+	byPath := map[string]mimebuild.Part{}
+	for _, p := range parts(t, msg) {
+		byPath[p.Path] = p
+		if p.ContentType == "multipart/related" {
+			related = p.Path
+		}
+	}
+	if related == "" {
+		t.Fatalf("no multipart/related in the assembled message:\n%s", msg)
+	}
+	html, image := byPath[related+".1"], byPath[related+".2"]
+	if html.ContentType != "text/html" {
+		t.Fatalf("the related group's root part must be the HTML: %+v", html)
+	}
+	if image.ContentType != "image/png" || image.ContentID != "logo" || image.Disposition != "inline" {
+		t.Fatalf("the image must be the HTML's sibling, inline, with the cid: %+v", image)
+	}
+	// The header a client matches a cid: against, spelled the way every other
+	// mailer spells it.
+	if !strings.Contains(string(msg), "Content-ID: <logo>") {
+		t.Fatalf("Content-ID header missing:\n%s", msg)
+	}
+	// The HTML body travels quoted-printable, which is what keeps a long line
+	// under RFC 5321's limit, so its "=" arrives as "=3D".
+	if !strings.Contains(string(msg), `<img src=3D"cid:logo">`) {
+		t.Fatalf("the HTML body must survive into the message:\n%s", msg)
+	}
+
+	decisions := map[string]guardrails.Decision{}
 	for _, d := range out.ServerMetadata.Guardrails {
-		sized = sized || (d.Name == "attachment_size" && d.Allowed)
-		// Allowed, but reported: SES will not render this inline.
-		warned = warned || (d.Name == "inline_not_rendered" && d.Allowed)
+		decisions[d.Name] = d
 	}
-	if !sized {
-		t.Fatalf("attachment_size decision missing: %+v", out.ServerMetadata.Guardrails)
+	for _, name := range []string{"attachment_size", "attachment_fields", "inline_content_id", "inline_needs_html", "inline_cid_refs", "assembled_size"} {
+		if d, ok := decisions[name]; !ok || !d.Allowed {
+			t.Fatalf("%s decision missing or blocking: %+v", name, out.ServerMetadata.Guardrails)
+		}
 	}
-	if !warned {
-		t.Fatalf("inline_not_rendered decision missing: %+v", out.ServerMetadata.Guardrails)
+	if want := fmt.Sprintf("%d bytes assembled", len(msg)); decisions["assembled_size"].Reason != want {
+		t.Fatalf("assembled_size reason %q want %q", decisions["assembled_size"].Reason, want)
+	}
+	// PR A's interim warning was removed with the defect it described.
+	if _, ok := decisions["inline_not_rendered"]; ok {
+		t.Fatalf("inline_not_rendered must be gone now that the image renders: %+v", out.ServerMetadata.Guardrails)
+	}
+}
+
+// The sentinel for the blast radius: only inline sends change shape. Anything
+// else still goes to SES as Content.Simple, which SES assembles as it always
+// has.
+func TestSendEmailOnlyInlineSendsBecomeRaw(t *testing.T) {
+	ordinary := attached(false, attachment("report.pdf", []byte("%PDF-1.7 tiny")))
+	ordinary.Content.Simple.Body.HTML = &schemas.Content{Data: "<p>report attached</p>"}
+	// An explicit ATTACHMENT wins over the ContentId, so this part keeps a
+	// Content-ID without pulling the message onto the assembled path.
+	labelled := attached(false, schemas.Attachment{
+		FileName: "logo.png", ContentType: "image/png", ContentId: "logo",
+		ContentDisposition: "ATTACHMENT", RawContent: base64.StdEncoding.EncodeToString(pngBytes),
+	})
+	for _, tc := range []struct {
+		name string
+		in   schemas.SendEmailInput
+		raw  bool
+	}{
+		{"inline attachment", inlineInput(false), true},
+		{"lower-case disposition is the same rule", func() schemas.SendEmailInput {
+			in := inlineInput(false)
+			in.Content.Simple.Attachments[0].ContentDisposition = "inline"
+			return in
+		}(), true},
+		{"a ContentId with no disposition", func() schemas.SendEmailInput {
+			in := inlineInput(false)
+			in.Content.Simple.Attachments[0].ContentDisposition = ""
+			return in
+		}(), true},
+		{"no attachments at all", simpleInput(false), false},
+		{"an ordinary attachment", ordinary, false},
+		{"an attachment that merely carries a ContentId", labelled, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ses := &fakeSES{}
+			_, out, _ := testDeps(ses).sendEmail()(authedCtx("msg/email:send"), nil, tc.in)
+			if out.MessageID != "msg-123" {
+				t.Fatalf("send failed: %+v", out)
+			}
+			if tc.raw {
+				assembledFrom(t, ses.sendIn)
+				return
+			}
+			if ses.sendIn.Content.Simple == nil || ses.sendIn.Content.Raw != nil {
+				t.Fatalf("this send must stay on SES's Simple path: %+v", ses.sendIn.Content)
+			}
+		})
+	}
+}
+
+// Bcc is the one recipient list that must not become a header: SES honours
+// Destination.BccAddresses for a raw message without disclosing it, and a Bcc
+// header would be delivered to everybody.
+func TestSendEmailAssembledKeepsBccOutOfTheMessage(t *testing.T) {
+	ses := &fakeSES{}
+	in := inlineInput(false)
+	in.Destination.BccAddresses = []string{"owner@example.com"}
+	if _, out, _ := testDeps(ses).sendEmail()(authedCtx("msg/email:send"), nil, in); out.MessageID != "msg-123" {
+		t.Fatalf("send failed: %+v", out)
+	}
+	if msg := string(assembledFrom(t, ses.sendIn)); strings.Contains(msg, "Bcc:") {
+		t.Fatalf("a Bcc header would leak the hidden recipient:\n%s", msg)
+	}
+	if got := ses.sendIn.Destination.BccAddresses; len(got) != 1 || got[0] != "owner@example.com" {
+		t.Fatalf("Bcc must still ride on the API parameter: %v", got)
+	}
+	if got := ses.sendIn.Destination.ToAddresses; len(got) != 1 {
+		t.Fatalf("To must still ride on the API parameter too: %v", got)
+	}
+}
+
+// Reply-To is the mirror image: it becomes a header, so the API parameter has
+// to be dropped or SES adds a second one and clients disagree about which wins.
+func TestSendEmailAssembledReplyToIsOneHeader(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		replyTo []string
+		want    string
+	}{
+		{"server default", nil, "owner@example.com"},
+		{"caller's own wins", []string{"custom@example.com"}, "custom@example.com"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ses := &fakeSES{}
+			in := inlineInput(false)
+			in.ReplyToAddresses = tc.replyTo
+			testDeps(ses).sendEmail()(authedCtx("msg/email:send"), nil, in)
+			msg := string(assembledFrom(t, ses.sendIn))
+			if n := strings.Count(msg, "Reply-To:"); n != 1 {
+				t.Fatalf("%d Reply-To headers, want exactly 1:\n%s", n, msg)
+			}
+			// Angle brackets because every address is re-emitted from a parsed
+			// net/mail.Address rather than from the caller's string.
+			if !strings.Contains(msg, "Reply-To: <"+tc.want+">") {
+				t.Fatalf("Reply-To must carry %s:\n%s", tc.want, msg)
+			}
+			if ses.sendIn.ReplyToAddresses != nil {
+				t.Fatalf("the API parameter must stay unset: %v", ses.sendIn.ReplyToAddresses)
+			}
+		})
+	}
+}
+
+// An assembled send digests both halves: each attachment as it arrived, and the
+// whole message as it will leave.
+func TestSendEmailAssembledDigests(t *testing.T) {
+	ses := &fakeSES{}
+	_, out, _ := testDeps(ses).sendEmail()(authedCtx("msg/email:send"), nil, inlineInput(true))
+	msg := assembledFrom(t, out.WouldCall)
+	want := []ContentDigest{
+		{Part: "attachment[0]:logo.png", Bytes: len(pngBytes), SHA256: sha256Hex(pngBytes)},
+		{Part: "assembled", Bytes: len(msg), SHA256: sha256Hex(msg)},
+	}
+	if !reflect.DeepEqual(out.ServerMetadata.ContentDigests, want) {
+		t.Fatalf("digests: %+v want %+v", out.ServerMetadata.ContentDigests, want)
+	}
+}
+
+func TestSendEmailInlineRefusals(t *testing.T) {
+	danglingRef := inlineInput(false)
+	danglingRef.Content.Simple.Body.HTML = &schemas.Content{Data: `<img src="cid:missing">`}
+	noHTML := inlineInput(false)
+	noHTML.Content.Simple.Body.HTML = nil
+	noID := inlineInput(false)
+	noID.Content.Simple.Attachments[0].ContentId = ""
+	// Not a guardrail: nothing in the string checks knows whether the bytes are
+	// 7-bit clean, and a corrupt delivery is worse than a refusal the caller
+	// can read.
+	sevenBit := inlineInput(false)
+	sevenBit.Content.Simple.Attachments[0].ContentTransferEncoding = "SEVEN_BIT"
+
+	for _, tc := range []struct {
+		name string
+		in   schemas.SendEmailInput
+		want string
+	}{
+		{"the HTML references a cid nothing declares", danglingRef, "inline_cid_refs"},
+		{"inline with no HTML to reference it", noHTML, "inline_needs_html"},
+		{"inline with no ContentId", noID, "inline_content_id"},
+		{"SEVEN_BIT on bytes that are not 7-bit clean", sevenBit, "cannot assemble the inline message"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ses := &fakeSES{}
+			res, _, _ := testDeps(ses).sendEmail()(authedCtx("msg/email:send"), nil, tc.in)
+			if res == nil || !res.IsError {
+				t.Fatalf("expected a refusal, got %+v", res)
+			}
+			if text := res.Content[0].(*mcp.TextContent).Text; !strings.Contains(text, tc.want) {
+				t.Fatalf("error text %q lacks %q", text, tc.want)
+			}
+			if ses.sendIn != nil {
+				t.Fatal("refused call must not reach SES")
+			}
+		})
+	}
+}
+
+// The 40 MB ceiling is SES's, and it is checked on the assembled bytes rather
+// than on the attachment budget: 10 MB of attachments assembles to ~13.7 MB, so
+// reusing EmailMaxRawBytes here would refuse sends that work today. Exercised
+// through the decision itself — a handler-level case would have to build a
+// 40 MB message to reach it.
+func TestAssembledSize(t *testing.T) {
+	if d := assembledSize(sesMaxMessageBytes); !d.Allowed || d.Name != "assembled_size" {
+		t.Fatalf("exactly at the ceiling must pass: %+v", d)
+	}
+	d := assembledSize(sesMaxMessageBytes + 1)
+	if d.Allowed || !strings.Contains(d.Reason, "over SES's maximum") {
+		t.Fatalf("over the ceiling must block: %+v", d)
 	}
 }

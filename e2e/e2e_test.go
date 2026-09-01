@@ -282,15 +282,20 @@ func TestTools(t *testing.T) {
 }
 
 // TestAttachByReference: an object already in the files bucket becomes an
-// email attachment by key — no bytes through the model — and the dry run
-// proves the server fetched exactly those bytes. The INLINE disposition and
-// ContentId below ride on the part but do not render as a cid: image: SES
-// assembles Simple attachments under multipart/mixed
-// (docs/plans/email-inline-mime.md). This test only covers the fetch, and a
-// DryRun never leaves the server, so it could not have caught that.
+// inline email image by key — no bytes through the model — the dry run proves
+// the server fetched exactly those bytes and assembled them into a
+// multipart/related, and the send after it puts that message in a real mailbox.
+//
+// The real send is the point. This test used to stop at the DryRun, which never
+// leaves the server, so nothing here could observe that the delivered image was
+// not rendering — that is precisely why the defect shipped
+// (docs/plans/email-inline-mime.md §8). A green run still only proves the
+// message left correctly assembled; the acceptance criterion is the owner
+// opening it in Gmail, Apple Mail, and Outlook.
 func TestAttachByReference(t *testing.T) {
 	e := load(t)
-	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	// Three minutes because the real send below waits on the delivery event.
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 	session := e.session(ctx, t)
 
@@ -329,19 +334,27 @@ func TestAttachByReference(t *testing.T) {
 		}
 	})
 
-	dry, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "ses_send_email", Arguments: map[string]any{
-		"DryRun":           true,
-		"FromEmailAddress": e.sender,
-		"Destination":      map[string]any{"ToAddresses": []string{e.recipient}},
-		"Content": map[string]any{"Simple": map[string]any{
-			"Subject": map[string]any{"Data": "e2e attach by reference"},
-			"Body":    map[string]any{"Html": map[string]any{"Data": `<p><img src="cid:e2e-pixel"></p>`}},
-			"Attachments": []map[string]any{{
-				"FileName": "e2e-inline.png", "ContentType": "image/png",
-				"RawContentKey": key, "ContentDisposition": "INLINE", "ContentId": "e2e-pixel",
+	inline := func(subject string, dryRun bool) map[string]any {
+		return map[string]any{
+			"DryRun":           dryRun,
+			"FromEmailAddress": e.sender,
+			"Destination":      map[string]any{"ToAddresses": []string{e.recipient}},
+			"Content": map[string]any{"Simple": map[string]any{
+				"Subject": map[string]any{"Data": subject},
+				"Body": map[string]any{
+					"Text": map[string]any{"Data": "the pixel should be visible in the HTML part"},
+					"Html": map[string]any{"Data": `<p>inline pixel: <img src="cid:e2e-pixel"></p>`},
+				},
+				"Attachments": []map[string]any{{
+					"FileName": "e2e-inline.png", "ContentType": "image/png",
+					"RawContentKey": key, "ContentDisposition": "INLINE", "ContentId": "e2e-pixel",
+				}},
 			}},
-		}},
-	}})
+		}
+	}
+
+	dry, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "ses_send_email",
+		Arguments: inline("e2e attach by reference", true)})
 	if err != nil {
 		t.Fatalf("ses_send_email: %v", err)
 	}
@@ -350,29 +363,61 @@ func TestAttachByReference(t *testing.T) {
 	}
 	out := structured(t, dry)
 
-	// WouldCall echoes the SDK input, so RawContent is the fetched bytes as
-	// base64 — the caller never sent them.
-	attachments, _ := dig(out, "WouldCall", "Content", "Simple")["Attachments"].([]any)
-	if len(attachments) != 1 {
-		t.Fatalf("would-call attachments: %v", out["WouldCall"])
+	// An inline attachment makes the server assemble the message itself, so the
+	// echo is Content.Raw — the whole MIME message, base64 in JSON — and not
+	// Content.Simple.Attachments.
+	if dig(out, "WouldCall", "Content")["Simple"] != nil {
+		t.Fatalf("an inline send must be assembled into Content.Raw: %v", out["WouldCall"])
 	}
-	encoded, _ := attachments[0].(map[string]any)["RawContent"].(string)
-	got, err := base64.StdEncoding.DecodeString(encoded)
-	if err != nil || len(got) == 0 {
-		t.Fatalf("attachment bytes %q: %v", encoded, err)
+	encoded, _ := dig(out, "WouldCall", "Content", "Raw")["Data"].(string)
+	message, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil || len(message) == 0 {
+		t.Fatalf("assembled message %q: %v", encoded, err)
 	}
-	if string(got) != string(png) {
-		t.Errorf("server attached %q, want the uploaded object", got)
+	if !strings.Contains(string(message), "multipart/related") {
+		t.Errorf("no multipart/related container, so a cid: cannot resolve:\n%s", message)
+	}
+	if !strings.Contains(string(message), "Content-ID: <e2e-pixel>") {
+		t.Errorf("no Content-ID header for the HTML to reference:\n%s", message)
+	}
+	// The fetched bytes, base64 inside the message: the caller never sent them
+	// and the server never had to send them back as a separate field.
+	if !strings.Contains(string(message), base64.StdEncoding.EncodeToString(png)) {
+		t.Errorf("the uploaded object's bytes are not in the assembled message:\n%s", message)
 	}
 
+	// One digest for the attachment as it arrived, one for the message it was
+	// assembled into.
 	digests, _ := dig(out, "ServerMetadata")["content_digests"].([]any)
-	if len(digests) != 1 {
+	if len(digests) != 2 {
 		t.Fatalf("content_digests: %v", out["ServerMetadata"])
 	}
 	want := sha256.Sum256(png)
 	if digest := digests[0].(map[string]any); digest["sha256"] != hex.EncodeToString(want[:]) {
 		t.Errorf("digest %v does not match the uploaded object", digest)
 	}
+	whole := sha256.Sum256(message)
+	if digest := digests[1].(map[string]any); digest["part"] != "assembled" || digest["sha256"] != hex.EncodeToString(whole[:]) {
+		t.Errorf("digest %v does not match the assembled message", digest)
+	}
+
+	// And now the half no DryRun can cover: a real inline image in a real
+	// mailbox, which is the only place the reported defect was visible.
+	stamp := time.Now().UTC().Format(time.RFC3339)
+	sent, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "ses_send_email",
+		Arguments: inline("e2e inline image "+stamp, false)})
+	if err != nil {
+		t.Fatalf("real inline send: %v", err)
+	}
+	if sent.IsError {
+		t.Fatalf("real inline send refused: %s", text(sent))
+	}
+	messageID, _ := structured(t, sent)["MessageId"].(string)
+	if messageID == "" {
+		t.Fatal("real inline send returned no MessageId")
+	}
+	t.Logf("sent inline image %s — open it and confirm the pixel renders in the body", messageID)
+	e.awaitDelivery(ctx, t, messageID)
 }
 
 // dig walks nested JSON objects, returning an empty map at the first miss so

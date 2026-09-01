@@ -24,8 +24,19 @@ import (
 	"github.com/gesparza8138/aws-messaging-mcp/internal/awsclients"
 	"github.com/gesparza8138/aws-messaging-mcp/internal/guardrails"
 	"github.com/gesparza8138/aws-messaging-mcp/internal/httpapi"
+	"github.com/gesparza8138/aws-messaging-mcp/internal/mimebuild"
 	"github.com/gesparza8138/aws-messaging-mcp/internal/schemas"
 )
+
+// sesMaxMessageBytes is SES's documented ceiling for one message, applied to
+// the message the server assembles itself.
+//
+// Deliberately not EmailMaxRawBytes (10 MB by default), which keeps metering
+// the *decoded* attachment bytes exactly as it does today: base64 inflates by
+// 4/3 before headers and boundaries, so 10 MB of attachments assembles to
+// ~13.7 MB, and measuring the assembled message against the attachment budget
+// would start refusing sends that work today.
+const sesMaxMessageBytes = 40 << 20
 
 // ContentDigest is a SHA-256 over one decoded binary part, so a client can
 // confirm the bytes the server received are the bytes it meant to send
@@ -148,25 +159,53 @@ func (d Deps) sendEmail() mcp.ToolHandlerFor[schemas.SendEmailInput, SendEmailOu
 					result.Add(dec)
 				}
 			}
-			// A warning, not a refusal: the send is valid and the bytes arrive
-			// intact, so this rides along in ServerMetadata to correct a caller
-			// who expected a rendered image (RecipientsAllowed's "allow-list
-			// disabled" is the same allowed-with-a-reason shape). It goes when
-			// the server assembles the multipart/related itself
-			// (docs/plans/email-inline-mime.md).
-			for _, a := range resolved {
-				if a.ContentDisposition == "INLINE" || a.ContentId != "" {
-					result.Add(guardrails.Decision{Name: "inline_not_rendered", Allowed: true,
-						Reason: "SES assembles Simple attachments under multipart/mixed, so a cid: reference does not resolve and the image arrives as an ordinary attachment; send Content.Raw with a multipart/related message for a true inline image"})
-					break
-				}
-			}
 		}
-		meta := ServerMetadata{Guardrails: result.Decisions, DryRun: in.DryRun}
-		out := SendEmailOutput{ServerMetadata: meta}
 		if res, blocked := blockedResult(result, in.DryRun); blocked {
 			return res, SendEmailOutput{}, nil
 		}
+
+		// An inline attachment gets a message this server assembles itself and
+		// sends as Content.Raw: SES roots every Simple attachment under a
+		// multipart/mixed, where a cid: reference never resolves, so the HTML
+		// part and the image have to be siblings inside a multipart/related we
+		// build (docs/plans/email-inline-mime.md). Every other send keeps SES's
+		// own Simple assembly, so nothing that sends today changes shape.
+		var assembled []byte
+		if in.Content.Simple != nil {
+			// Which attachments count as inline is InlineAttachments' rule and
+			// not a second copy of it: it returns no decisions at all exactly
+			// when nothing is inline, so an ordinary attachment send is still
+			// evaluated the way it is today, and the checks can never cover a
+			// different set of parts than the assembler places inline.
+			inline := guardrails.InlineAttachments(
+				inlineAttachments(in.Content.Simple.Attachments, attDecoded), htmlBody(in.Content.Simple))
+			if len(inline) > 0 {
+				for _, dec := range inline {
+					result.Add(dec)
+				}
+				// Checked before assembling, so a refusal reaches the caller as
+				// the guardrail that made it rather than as an opaque assembly
+				// error.
+				if res, blocked := blockedResult(result, in.DryRun); blocked {
+					return res, SendEmailOutput{}, nil
+				}
+				var err error
+				// The part list is Assemble's other return; PR D reports it as
+				// ServerMetadata.mime_structure.
+				if assembled, _, err = mimebuild.Assemble(assembleMessage(in, s.SESReplyTo, attDecoded)); err != nil {
+					// Every Assemble failure is a caller mistake with no policy
+					// to phrase it as: an address that will not parse, a
+					// Content-ID that cannot go in a header, SEVEN_BIT on bytes
+					// that are not 7-bit clean.
+					return toolError("cannot assemble the inline message: " + err.Error()), SendEmailOutput{}, nil
+				}
+				result.Add(assembledSize(len(assembled)))
+				if res, blocked := blockedResult(result, in.DryRun); blocked {
+					return res, SendEmailOutput{}, nil
+				}
+			}
+		}
+		out := SendEmailOutput{ServerMetadata: ServerMetadata{Guardrails: result.Decisions, DryRun: in.DryRun}}
 
 		// Digested after the guardrails pass and before the DryRun fork, so a
 		// dry run and the real send report identical digests.
@@ -174,9 +213,16 @@ func (d Deps) sendEmail() mcp.ToolHandlerFor[schemas.SendEmailInput, SendEmailOu
 		if in.Content.Simple != nil {
 			atts = in.Content.Simple.Attachments
 		}
-		out.ServerMetadata.ContentDigests = contentDigests(rawDecoded, atts, attDecoded)
+		out.ServerMetadata.ContentDigests = contentDigests(rawDecoded, atts, attDecoded, assembled)
 
-		call := buildSendEmail(in, s.SESConfigurationSet, s.SESReplyTo, rawDecoded, attDecoded)
+		call := buildSendEmail(sendEmailParams{
+			in:               in,
+			configurationSet: s.SESConfigurationSet,
+			defaultReplyTo:   s.SESReplyTo,
+			rawDecoded:       rawDecoded,
+			attDecoded:       attDecoded,
+			assembled:        assembled,
+		})
 		if in.DryRun {
 			out.WouldCall = call
 			return nil, out, nil
@@ -282,12 +328,19 @@ func objectMissing(err error) bool {
 	return errors.As(err, &notFound) || errors.As(err, &noSuchKey)
 }
 
-// contentDigests hashes the decoded binary parts of one send: the raw MIME
-// message, or every attachment whose bytes decoded (attDecoded is index-aligned
-// with atts, nil where a decode failed). Simple Subject/Body text is left out
-// on purpose — it travels as plain JSON in the request, so digesting it would
-// only add noise. Returns nil when nothing binary was sent.
-func contentDigests(rawDecoded []byte, atts []schemas.Attachment, attDecoded [][]byte) []ContentDigest {
+// contentDigests hashes the decoded binary parts of one send: the caller's own
+// raw MIME message, or every attachment whose bytes decoded (attDecoded is
+// index-aligned with atts, nil where a decode failed) plus the whole message
+// when the server assembled one. Simple Subject/Body text is left out on
+// purpose — it travels as plain JSON in the request, so digesting it would only
+// add noise. Returns nil when nothing binary was sent.
+//
+// "raw" stays reserved for a caller-supplied Content.Raw, which is why the
+// assembled message is a separate parameter with its own name: the early return
+// below would otherwise replace every per-attachment digest with one for the
+// whole message, and the per-attachment digests are how a caller proves its
+// image survived (the two are never both set).
+func contentDigests(rawDecoded []byte, atts []schemas.Attachment, attDecoded [][]byte, assembled []byte) []ContentDigest {
 	if rawDecoded != nil {
 		return []ContentDigest{digestOf("raw", rawDecoded)}
 	}
@@ -299,6 +352,9 @@ func contentDigests(rawDecoded []byte, atts []schemas.Attachment, attDecoded [][
 		// Indexed as well as named because two attachments may share a FileName.
 		digests = append(digests, digestOf(fmt.Sprintf("attachment[%d]:%s", i, a.FileName), attDecoded[i]))
 	}
+	if assembled != nil {
+		digests = append(digests, digestOf("assembled", assembled))
+	}
 	return digests
 }
 
@@ -307,17 +363,141 @@ func digestOf(part string, decoded []byte) ContentDigest {
 	return ContentDigest{Part: part, Bytes: len(decoded), SHA256: hex.EncodeToString(sum[:])}
 }
 
+// inlineAttachments describes the resolved attachments to the inline
+// guardrails, which own the FileName, ContentType, and ContentId rules SES used
+// to enforce for us on the Simple path. decoded is index-aligned with atts.
+func inlineAttachments(atts []schemas.Attachment, decoded [][]byte) []guardrails.InlineAttachment {
+	out := make([]guardrails.InlineAttachment, len(atts))
+	for i, a := range atts {
+		out[i] = guardrails.InlineAttachment{
+			FileName:         a.FileName,
+			ContentType:      a.ContentType,
+			Disposition:      a.ContentDisposition,
+			ContentID:        a.ContentId,
+			TransferEncoding: a.ContentTransferEncoding,
+		}
+		if i < len(decoded) {
+			out[i].Bytes = len(decoded[i])
+		}
+	}
+	return out
+}
+
+// htmlBody returns the message's HTML body, which is the only place a cid:
+// reference can live.
+func htmlBody(m *schemas.Message) string {
+	if m.Body == nil || m.Body.HTML == nil {
+		return ""
+	}
+	return m.Body.HTML.Data
+}
+
+// assembledSize meters the message the server built against SES's own ceiling.
+//
+// A Decision literal here rather than a function in internal/guardrails: that
+// package carries a 100 %-per-function coverage gate that earns its keep on the
+// string checks, and one length comparison is not worth triggering it.
+func assembledSize(n int) guardrails.Decision {
+	if n > sesMaxMessageBytes {
+		return guardrails.Decision{Name: "assembled_size", Allowed: false,
+			Reason: fmt.Sprintf("the assembled message is %d bytes, over SES's maximum of %d", n, sesMaxMessageBytes)}
+	}
+	return guardrails.Decision{Name: "assembled_size", Allowed: true,
+		Reason: fmt.Sprintf("%d bytes assembled", n)}
+}
+
+// assembleMessage maps the tool input onto the assembler's input. attDecoded is
+// index-aligned with the Simple attachments and carries the bytes the
+// guardrails already decoded.
+//
+// Bcc is deliberately absent, and mimebuild.Message has no field for it: blind
+// recipients ride on Destination.BccAddresses, which SES honours for a raw
+// message without disclosing them, while a Bcc header inside the message would
+// be delivered to everybody and leak every hidden recipient. replyTo is the
+// effective Reply-To, which becomes a header here *instead of* the API
+// parameter (see buildSendEmail). The Subject charset the caller may have
+// declared has no counterpart: an unstructured header is emitted as RFC 2047
+// encoded words in utf-8 whatever the body charsets are.
+func assembleMessage(in schemas.SendEmailInput, defaultReplyTo string, attDecoded [][]byte) mimebuild.Message {
+	simple := in.Content.Simple
+	msg := mimebuild.Message{
+		From:    in.FromEmailAddress,
+		ReplyTo: replyToAddresses(in, defaultReplyTo),
+		HTML:    htmlBody(simple),
+		Date:    time.Now().UTC(),
+	}
+	if in.Destination != nil {
+		msg.To = in.Destination.ToAddresses
+		msg.Cc = in.Destination.CcAddresses
+	}
+	if simple.Subject != nil {
+		msg.Subject = simple.Subject.Data
+	}
+	if simple.Body != nil {
+		if simple.Body.Text != nil {
+			msg.Text, msg.TextCharset = simple.Body.Text.Data, simple.Body.Text.Charset
+		}
+		if simple.Body.HTML != nil {
+			msg.HTMLCharset = simple.Body.HTML.Charset
+		}
+	}
+	for i, a := range simple.Attachments {
+		att := mimebuild.Attachment{
+			FileName:         a.FileName,
+			ContentType:      a.ContentType,
+			ContentID:        a.ContentId,
+			Disposition:      a.ContentDisposition,
+			TransferEncoding: a.ContentTransferEncoding,
+			Description:      a.ContentDescription,
+		}
+		if i < len(attDecoded) {
+			att.Content = attDecoded[i]
+		}
+		msg.Attachments = append(msg.Attachments, att)
+	}
+	return msg
+}
+
+// replyToAddresses is the effective Reply-To: the caller's, else the server's
+// default (the sending domain hosts no mailboxes), else none. One function
+// because the API parameter and the assembled message's header have to agree on
+// it, and only one of the two ever carries it.
+func replyToAddresses(in schemas.SendEmailInput, defaultReplyTo string) []string {
+	switch {
+	case len(in.ReplyToAddresses) > 0:
+		return in.ReplyToAddresses
+	case defaultReplyTo != "":
+		return []string{defaultReplyTo}
+	default:
+		return nil
+	}
+}
+
+// sendEmailParams is what buildSendEmail maps onto the SDK input. A struct
+// rather than a parameter list because the list reached seven with the
+// assembled path, four of them interchangeable []byte and string.
+type sendEmailParams struct {
+	in               schemas.SendEmailInput
+	configurationSet string
+	defaultReplyTo   string
+	rawDecoded       []byte   // the caller's own Content.Raw, already decoded
+	attDecoded       [][]byte // decoded Simple attachments, index-aligned
+	assembled        []byte   // the message the server built, nil on the Simple path
+}
+
 // buildSendEmail maps the tool input onto the SDK input, injecting the
-// server-owned fields (PRD 5.1 rule 2). rawDecoded and attDecoded are the
-// bytes the guardrails already decoded; attDecoded is index-aligned with the
-// Simple attachments.
-func buildSendEmail(in schemas.SendEmailInput, configurationSet, defaultReplyTo string, rawDecoded []byte, attDecoded [][]byte) *sesv2.SendEmailInput {
+// server-owned fields (PRD 5.1 rule 2).
+func buildSendEmail(p sendEmailParams) *sesv2.SendEmailInput {
+	in := p.in
 	call := &sesv2.SendEmailInput{
 		FromEmailAddress: aws.String(in.FromEmailAddress),
 		Content:          &sestypes.EmailContent{},
 	}
-	if configurationSet != "" {
-		call.ConfigurationSetName = aws.String(configurationSet)
+	// The configuration set, the destination (BccAddresses included), and the
+	// tags are API parameters rather than message content, so they are set the
+	// same way whichever content shape follows.
+	if p.configurationSet != "" {
+		call.ConfigurationSetName = aws.String(p.configurationSet)
 	}
 	if in.Destination != nil {
 		call.Destination = &sestypes.Destination{
@@ -326,19 +506,24 @@ func buildSendEmail(in schemas.SendEmailInput, configurationSet, defaultReplyTo 
 			BccAddresses: in.Destination.BccAddresses,
 		}
 	}
-	switch {
-	case len(in.ReplyToAddresses) > 0:
-		call.ReplyToAddresses = in.ReplyToAddresses
-	case defaultReplyTo != "":
-		call.ReplyToAddresses = []string{defaultReplyTo}
+	// A message we assembled carries its own Reply-To header, so the parameter
+	// stays unset: SES would add a second Reply-To from it, and two of them
+	// violate RFC 5322 §3.6 with clients disagreeing about which one wins. The
+	// same effective value went into the header (see assembleMessage).
+	if p.assembled == nil {
+		call.ReplyToAddresses = replyToAddresses(in, p.defaultReplyTo)
 	}
 	for _, tag := range in.EmailTags {
 		call.EmailTags = append(call.EmailTags, sestypes.MessageTag{
 			Name: aws.String(tag.Name), Value: aws.String(tag.Value),
 		})
 	}
+	if p.assembled != nil {
+		call.Content.Raw = &sestypes.RawMessage{Data: p.assembled}
+		return call
+	}
 	if in.Content.Raw != nil {
-		call.Content.Raw = &sestypes.RawMessage{Data: rawDecoded}
+		call.Content.Raw = &sestypes.RawMessage{Data: p.rawDecoded}
 		return call
 	}
 	simple := in.Content.Simple
@@ -357,8 +542,8 @@ func buildSendEmail(in schemas.SendEmailInput, configurationSet, defaultReplyTo 
 	}
 	for i, a := range simple.Attachments {
 		att := sestypes.Attachment{FileName: aws.String(a.FileName)}
-		if i < len(attDecoded) {
-			att.RawContent = attDecoded[i]
+		if i < len(p.attDecoded) {
+			att.RawContent = p.attDecoded[i]
 		}
 		if a.ContentType != "" {
 			att.ContentType = aws.String(a.ContentType)
