@@ -61,9 +61,13 @@ type Body struct {
 }
 
 // Attachment mirrors sesv2 Attachment (the caller-controlled subset). SES
-// assembles the MIME itself, so INLINE + ContentId is the cheap way to embed
-// an image without hand-building a Raw message. RawContentKey is the one
-// field with no SDK counterpart: it names an object already in the files
+// assembles Simple attachments under a multipart/mixed root, so INLINE +
+// ContentId does not embed an image: a cid: reference only resolves when the
+// HTML part and the image part are siblings inside a multipart/related, and
+// the attachment is delivered as an ordinary one instead. Content.Raw with a
+// hand-built multipart/related is the path that works today; server-side
+// assembly is planned (docs/plans/email-inline-mime.md). RawContentKey is the
+// one field with no SDK counterpart: it names an object already in the files
 // bucket, which the server reads and attaches as RawContent so the bytes
 // never travel through the caller's context.
 type Attachment struct {
@@ -72,10 +76,10 @@ type Attachment struct {
 	RawContent         string `json:"RawContent,omitempty" jsonschema:"Attachment bytes, base64-encoded; exactly one of RawContent or RawContentKey must be set. Decoded attachments and Raw content share the server budget (10 MB decoded by default), and SES caps the assembled message at 40 MB"`
 	RawContentKey      string `json:"RawContentKey,omitempty" jsonschema:"Key of an object already in the files bucket (shared/... from files_put_object or files_list_objects) to attach instead of RawContent; exactly one of the two must be set. Requires msg/read as well as msg/email:send, and the object must still be within its expiry and inside the attachment budget"`
 	ContentDescription string `json:"ContentDescription,omitempty" jsonschema:"Human-readable description of the attachment"`
-	ContentDisposition string `json:"ContentDisposition,omitempty" jsonschema:"Either ATTACHMENT (default) or INLINE; INLINE with ContentId lets HTML reference the image as <img src=\"cid:...\">. Case-sensitive."`
+	ContentDisposition string `json:"ContentDisposition,omitempty" jsonschema:"Either ATTACHMENT (default) or INLINE; INLINE does NOT render the image in the body today, because SES assembles Simple attachments under multipart/mixed rather than the multipart/related a cid: reference needs - send Content.Raw with a hand-built multipart/related message for that. Case-sensitive."`
 	// ContentId keeps the SDK's spelling (not ContentID) because the contract
 	// test matches schema field names against the SDK struct by reflection.
-	ContentId               string `json:"ContentId,omitempty" jsonschema:"Content-ID the HTML body cites as cid:<value>; pair it with ContentDisposition INLINE"` //nolint:revive // SDK field name, see above
+	ContentId               string `json:"ContentId,omitempty" jsonschema:"Content-ID recorded on the attachment part; a cid:<value> reference in the HTML body does not resolve to it, because SES assembles Simple attachments under multipart/mixed - use Content.Raw with a multipart/related message for a rendered inline image"` //nolint:revive // SDK field name, see above
 	ContentTransferEncoding string `json:"ContentTransferEncoding,omitempty" jsonschema:"BASE64 (default), QUOTED_PRINTABLE, or SEVEN_BIT; case-sensitive"`
 }
 

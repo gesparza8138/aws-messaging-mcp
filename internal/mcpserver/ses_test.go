@@ -611,11 +611,16 @@ func TestSendEmailInlineAttachmentThroughGuardrails(t *testing.T) {
 	if string(out.WouldCall.Content.Simple.Attachments[0].RawContent) != "png" {
 		t.Fatalf("guardrail-decoded bytes must reach the call: %+v", out.WouldCall.Content.Simple.Attachments[0])
 	}
-	var sized bool
+	var sized, warned bool
 	for _, d := range out.ServerMetadata.Guardrails {
 		sized = sized || (d.Name == "attachment_size" && d.Allowed)
+		// Allowed, but reported: SES will not render this inline.
+		warned = warned || (d.Name == "inline_not_rendered" && d.Allowed)
 	}
 	if !sized {
 		t.Fatalf("attachment_size decision missing: %+v", out.ServerMetadata.Guardrails)
+	}
+	if !warned {
+		t.Fatalf("inline_not_rendered decision missing: %+v", out.ServerMetadata.Guardrails)
 	}
 }
