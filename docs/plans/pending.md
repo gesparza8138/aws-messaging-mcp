@@ -2,7 +2,7 @@
 
 Living checklist of everything in flight or waiting on someone. Update it
 whenever an item lands (check it off with the date) or a new wait appears.
-Last updated: 2026-09-01 (inline-CID correction).
+Last updated: 2026-09-01 (inline CID shipped; sms send chain fixed).
 
 ## Owner actions
 
@@ -46,17 +46,32 @@ Last updated: 2026-09-01 (inline-CID correction).
   Fixed along the way: silently dropped attachment base64 errors, unmetered
   attachments, and binary `DryRun` failing the SDK's output validation
   since M2. See [email-composition.md](email-composition.md).
-  Awaiting the `v1.1.0` release (dev deploy + e2e first).
-- [ ] **Inline (CID) images do not actually render** — exposing the SDK's
-  `ContentDisposition`/`ContentId` fields was not enough: SES assembles
-  `Simple` attachments under `multipart/mixed`, so the `cid:` reference never
-  resolves and the image lands as an ordinary attachment. The server now
-  assembles the `multipart/related` itself and sends it as `Content.Raw`
-  (PR C), which is a breaking change to the `DryRun` echo for those sends.
-  Remaining: the owner opening a real inline send in Gmail, Apple Mail, and
-  Outlook (the actual acceptance criterion), then `ServerMetadata.mime_structure`
-  (PR D) and `Content.Raw.DataKey` (PR E) in
-  [email-inline-mime.md](email-inline-mime.md).
+  Released as `v1.1.0` on 2026-08-31.
+- [x] **Inline (CID) images** — all five PRs shipped (#84, #85, #86, #87 and
+  the follow-ups below); dev e2e green with a real inline send and a
+  delivery event. See [email-inline-mime.md](email-inline-mime.md).
+- [x] **SMS sending, four defects deep** — found while validating the above,
+  all pre-existing and none related to email. In order of discovery, each
+  hiding the next: an e2e helper panicked on a nil result (#83); the SMS
+  `DryRun` failed the SDK's own output validation on a nil map (#88); the
+  IAM grant omitted the protect configuration (#89); and the API was called
+  with the E.164 number where an ARN was needed, so the scoped grant never
+  matched (#90). SMS had never sent successfully.
+
+## Owner acceptance still open
+
+- [ ] **Open a real inline image and confirm it renders in the body** — this
+  is the actual acceptance criterion for the inline work and the one thing
+  no test can assert. The dev e2e sends one to the `E2E_RECIPIENT` inbox on
+  every run (subject `aws-messaging-mcp e2e …`, a 1-pixel PNG referenced as
+  `cid:e2e-pixel`). Check Gmail web and mobile, Apple Mail, and Outlook, and
+  record the date and results in
+  [email-inline-mime.md](email-inline-mime.md) §8. The image must appear in
+  the body flow and **not** also as an attachment.
+- [ ] **A real SMS is still unsendable** — refused with `RESOURCE_NOT_ACTIVE`
+  until the toll-free number leaves carrier verification (the e2e skips on
+  it). The permission chain behind it is fixed, so this is now purely the
+  registration wait tracked above.
 
 ## Standing notes
 
