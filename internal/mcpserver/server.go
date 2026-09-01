@@ -84,12 +84,14 @@ func NewServer(d Deps) *mcp.Server {
 	}
 	if d.EUM != nil {
 		mcp.AddTool(server, &mcp.Tool{
-			Name:        "sms_send_text_message",
-			Description: "Send an SMS via AWS End User Messaging (SendTextMessage shape); requires msg/sms:send. Supports DryRun.",
+			Name:         "sms_send_text_message",
+			OutputSchema: outputSchemaFor[SendTextOutput]("sms_send_text_message"),
+			Description:  "Send an SMS via AWS End User Messaging (SendTextMessage shape); requires msg/sms:send. Supports DryRun.",
 		}, d.sendTextMessage())
 		mcp.AddTool(server, &mcp.Tool{
-			Name:        "sms_send_media_message",
-			Description: "Send an MMS with images via AWS End User Messaging (SendMediaMessage shape); requires msg/sms:send. Supports DryRun.",
+			Name:         "sms_send_media_message",
+			OutputSchema: outputSchemaFor[SendMediaOutput]("sms_send_media_message"),
+			Description:  "Send an MMS with images via AWS End User Messaging (SendMediaMessage shape); requires msg/sms:send. Supports DryRun.",
 		}, d.sendMediaMessage())
 		mcp.AddTool(server, &mcp.Tool{
 			Name:        "sms_describe_phone_numbers",
@@ -102,8 +104,9 @@ func NewServer(d Deps) *mcp.Server {
 	}
 	if d.Files != nil {
 		mcp.AddTool(server, &mcp.Tool{
-			Name:        "files_put_object",
-			Description: "Upload an inline file (≤4 MB) and get back a CloudFront-signed download link; requires msg/files:write. Supports DryRun.",
+			Name:         "files_put_object",
+			OutputSchema: outputSchemaFor[PutObjectOutput]("files_put_object"),
+			Description:  "Upload an inline file (≤4 MB) and get back a CloudFront-signed download link; requires msg/files:write. Supports DryRun.",
 		}, d.filesPutObject())
 		mcp.AddTool(server, &mcp.Tool{
 			Name:        "files_create_upload_url",

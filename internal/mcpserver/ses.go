@@ -92,13 +92,39 @@ type SendEmailOutput struct {
 // tool registration, cmd/gendocs, and the Lambda cold start for the sake of one
 // diagnostic field. TestSendEmailOutputSchemaStaysInferable is the tripwire.
 func sendEmailOutputSchema() *jsonschema.Schema {
-	schema, err := jsonschema.For[SendEmailOutput](&jsonschema.ForOptions{
+	return outputSchemaFor[SendEmailOutput]("ses_send_email")
+}
+
+// outputSchemaFor infers a tool's output schema, correcting the two places
+// where the inferred shape and encoding/json disagree about a WouldCall echo
+// of an AWS SDK input struct. Inference describes Go's zero values by the Go
+// type; encoding/json writes what the zero value actually becomes on the wire,
+// and AddTool validates handler output against the inferred schema, so a
+// mismatch fails the whole call with a JSON-RPC error rather than any
+// diagnosable result:
+//
+//   - []byte infers as an array but marshals as a base64 string (every
+//     ses_send_email DryRun carrying binary content failed this way from M2
+//     until it was found);
+//   - a nil map infers as a required, non-nullable object but marshals as
+//     null (every sms_send_text_message DryRun failed this way on
+//     SendTextMessageInput.DestinationCountryParameters, which the server
+//     never sets).
+//
+// Both are properties of echoing SDK structs, so every tool with a WouldCall
+// declares its schema through here rather than waiting to be the next one
+// found. TestOutputSchemasStayInferable is the tripwire: the error path below
+// panics inside NewServer, which would take down every tool registration,
+// cmd/gendocs, and the Lambda cold start.
+func outputSchemaFor[T any](tool string) *jsonschema.Schema {
+	schema, err := jsonschema.For[T](&jsonschema.ForOptions{
 		TypeSchemas: map[reflect.Type]*jsonschema.Schema{
-			reflect.TypeFor[[]byte](): {Types: []string{"null", "string"}},
+			reflect.TypeFor[[]byte]():            {Types: []string{"null", "string"}},
+			reflect.TypeFor[map[string]string](): {Types: []string{"null", "object"}, AdditionalProperties: &jsonschema.Schema{Types: []string{"string"}}},
 		},
 	})
 	if err != nil { // a type-shape error, not a runtime condition; AddTool panics on these too
-		panic("ses_send_email output schema: " + err.Error())
+		panic(tool + " output schema: " + err.Error())
 	}
 	return schema
 }

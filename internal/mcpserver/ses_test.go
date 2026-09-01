@@ -17,6 +17,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/sesv2"
 	sestypes "github.com/aws/aws-sdk-go-v2/service/sesv2/types"
 	"github.com/aws/smithy-go"
+	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/gesparza8138/aws-messaging-mcp/internal/auth"
@@ -886,6 +887,40 @@ func TestSendEmailOutputSchemaStaysInferable(t *testing.T) {
 	part := meta.Properties["mime_structure"].Items
 	if part == nil || part.Properties["path"] == nil || part.Properties["depth"] == nil {
 		t.Fatalf("each part carries its own path and depth, which is how a reader rebuilds the tree: %+v", part)
+	}
+}
+
+// A nil Go map marshals to null but infers as a required, non-nullable object,
+// so any WouldCall echoing an SDK struct with a map the server never populates
+// fails the SDK's own output validation and the caller gets a JSON-RPC error
+// instead of a result. sms_send_text_message did exactly that on
+// SendTextMessageInput.DestinationCountryParameters, unnoticed until an e2e
+// helper stopped panicking over it. Every tool with a WouldCall now declares
+// its schema, and this asserts the correction survives.
+func TestWouldCallSchemasAcceptZeroValues(t *testing.T) {
+	for _, tc := range []struct {
+		tool   string
+		schema *jsonschema.Schema
+		field  string
+		want   []string
+	}{
+		{"sms_send_text_message", outputSchemaFor[SendTextOutput]("t"), "DestinationCountryParameters", []string{"null", "object"}},
+		{"sms_send_media_message", outputSchemaFor[SendMediaOutput]("t"), "Context", []string{"null", "object"}},
+		{"files_put_object", outputSchemaFor[PutObjectOutput]("t"), "Metadata", []string{"null", "object"}},
+	} {
+		t.Run(tc.tool, func(t *testing.T) {
+			would := tc.schema.Properties["WouldCall"]
+			if would == nil {
+				t.Fatalf("no WouldCall in the declared schema")
+			}
+			got := would.Properties[tc.field]
+			if got == nil {
+				t.Fatalf("%s missing from WouldCall", tc.field)
+			}
+			if !reflect.DeepEqual(got.Types, tc.want) {
+				t.Fatalf("%s types %v, want %v — a nil map marshals to null", tc.field, got.Types, tc.want)
+			}
+		})
 	}
 }
 
