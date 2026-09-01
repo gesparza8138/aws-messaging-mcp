@@ -2,7 +2,7 @@
 
 Living checklist of everything in flight or waiting on someone. Update it
 whenever an item lands (check it off with the date) or a new wait appears.
-Last updated: 2026-08-31 (post-email-composition).
+Last updated: 2026-09-01 (inline-CID correction).
 
 ## Owner actions
 
@@ -41,12 +41,19 @@ Last updated: 2026-08-31 (post-email-composition).
   concurrency active. **The PRD's build scope is complete.**
 - [x] **Email composition** (merged to `main` 2026-08-31; PRs #76, #80 —
   #77/#78/#79 were casualties of stacked bases being deleted on merge).
-  Inline CID attachments, attachment guardrails, split raw decisions,
-  content digests, and attach-by-reference from the files bucket. Fixed
-  along the way: silently dropped attachment base64 errors, unmetered
+  The SDK's inline/CID attachment fields, attachment guardrails, split raw
+  decisions, content digests, and attach-by-reference from the files bucket.
+  Fixed along the way: silently dropped attachment base64 errors, unmetered
   attachments, and binary `DryRun` failing the SDK's output validation
   since M2. See [email-composition.md](email-composition.md).
   Awaiting the `v1.1.0` release (dev deploy + e2e first).
+- [ ] **Inline (CID) images do not actually render** — exposing the SDK's
+  `ContentDisposition`/`ContentId` fields was not enough: SES assembles
+  `Simple` attachments under `multipart/mixed`, so the `cid:` reference never
+  resolves and the image lands as an ordinary attachment. Docs, the tool
+  description, and a non-blocking `inline_not_rendered` decision are corrected
+  now; server-side `multipart/related` assembly is planned in
+  [email-inline-mime.md](email-inline-mime.md).
 
 ## Standing notes
 

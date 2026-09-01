@@ -4,8 +4,10 @@ Status: **approved (2026-08-31) — all three PRs implemented**. Post-M5 work on
 `ses_send_email` only ([PRD](../PRD.md) §5.3, §8): no new tools, and — as it
 turned out — no infrastructure change at all, PR3 included (EC-9). It answers a gap
 report from a client that tried to send an email with an embedded image
-(§1) and closes it in three PRs (§3). Exit criteria: an HTML email with a
-`cid:` image sends without the client hand-building MIME; every send tool
+(§1) and closes it in three PRs (§3). Exit criteria: ~~an HTML email with a
+`cid:` image sends without the client hand-building MIME~~ (**not met — see
+EC-13**; the fields ship but SES does not render them inline, and the work
+moves to [email-inline-mime.md](email-inline-mime.md)); every send tool
 can prove what it received; attachments can name a file the server already
 holds instead of shipping its bytes through the model.
 
@@ -23,7 +25,7 @@ Verbatim from the client that hit this, kept as the requirements source:
 
 | # | Finding | Consequence |
 | --- | --- | --- |
-| EC-1 | The SDK's `sestypes.Attachment` already carries `ContentDisposition` (`ATTACHMENT`/`INLINE`), `ContentId`, `ContentTransferEncoding`, and `ContentDescription`; SES assembles the MIME for `Simple` + `Attachments`. Our schema exposed only `FileName`/`ContentType`/`RawContent` | Gap-report items (2) and (3) are a schema omission, not a missing feature: exposing the four fields gives `cid:` images with no raw MIME and no double base64. PR1 |
+| EC-1 | ~~The SDK's `sestypes.Attachment` already carries `ContentDisposition` (`ATTACHMENT`/`INLINE`), `ContentId`, `ContentTransferEncoding`, and `ContentDescription`; SES assembles the MIME for `Simple` + `Attachments`. Our schema exposed only `FileName`/`ContentType`/`RawContent`~~ **Superseded by EC-13**: the fields exist and are passed through, but SES assembles them under `multipart/mixed`, so exposing them did *not* give `cid:` images | ~~Gap-report items (2) and (3) are a schema omission, not a missing feature: exposing the four fields gives `cid:` images with no raw MIME and no double base64.~~ The four fields still ship (they are the correct schema mirror), but gap-report items (2) and (3) are **not** closed: inline rendering needs the server to build the MIME. See [email-inline-mime.md](email-inline-mime.md). PR1 |
 | EC-2 | `buildSendEmail` decoded both base64 payloads with `raw, _ :=` and dropped the error | A corrupt attachment silently became empty bytes instead of a refusal. The guardrails now decode once and hand the bytes to the builder, which no longer decodes at all. PR1 |
 | EC-3 | Attachments had no size guardrail at all — only `Content.Raw` was capped | Any number of attachments could be pushed at SES until it refused. They now share the `EmailMaxRawBytes` budget as combined decoded bytes. PR1 |
 | EC-4 | `RawEmail` reported bad base64 as `raw_size` and MIME-header failures as `sender_allow_list` | Gap-report item (5): the decision name lied about what failed. Split into `raw_base64` → `raw_size` → `raw_mime` → `sender_allow_list`, progressive so `ServerMetadata` shows the whole ladder. PR1 |
@@ -35,6 +37,8 @@ Verbatim from the client that hit this, kept as the requirements source:
 | EC-10 | The files bucket takes objects up to `FilesMaxUploadBytes` (500 MB), 50× the 10 MB email attachment budget | A referenced object is `HeadObject`-ed and refused on `ContentLength` *before* `GetObject`, so an oversize reference costs one metadata call instead of pulling 500 MB into a 6 MB-response Lambda to be refused by the size guardrail afterwards. PR3 |
 | EC-11 | `CleanupFiles` runs daily, so an object stays readable for up to ~24 h after its `expires-at` passes | Attaching one would outlive the expiry the owner chose, so the read path refuses it with its own message ("awaiting cleanup") — distinct from not-found, because the two mean different things to the caller. PR3 |
 | EC-12 | The content-type deny-list planned for PR3 is already enforced on every write into the bucket (`files_put_object` and the presigned `files_create_upload_url`, which binds the `Content-Type`) | Re-checking it on read would refuse nothing that could be there, so it was dropped. Email attachments are not served to a browser by CloudFront in any case — the deny-list exists for the link path. PR3 |
+| EC-13 | **EC-1's premise was wrong.** SES `SendEmail` with `Simple` content assembles attachments under a root `multipart/mixed`; a `cid:` reference resolves only when the HTML part and the image part are siblings inside a `multipart/related`. Reported after the fact by a client: three sends (`image/png`, `image/jpeg`, and the `<angle-bracket>` `ContentId` spelling), all accepted, all delivered, none rendered, with `content_digests` proving the bytes arrived intact. AWS's own re:Post thread ([Sept 2025](https://repost.aws/questions/QUfip3VbVIT1-1tEenZyBzSg/email-attachments-in-ses-v2-incorrect-inline-documentation-and-mime-implementation)) confirms it and recommends raw MIME. The claim was never verified against a real delivery — the e2e test only ever did a `DryRun` | The plan's headline capability ("an HTML email with a `cid:` image sends without the client hand-building MIME") was never delivered, and the tool description actively directed callers away from the shape that does work. Corrected in `docs/plans/email-inline-mime.md` PR A (docs, tool description, and a non-blocking `inline_not_rendered` decision); server-side `multipart/related` assembly follows |
+| EC-14 | §4's rationale for excluding `Content.Raw.DataKey` — that a bucket-sourced raw message "would bypass the sender-allow-list parse" — was wrong: `guardrails.RawEmail` parses *decoded* bytes, and bytes read from the bucket decode to the same thing | The exclusion needed a real reason (scope, not safety). Corrected in §4 below; `DataKey` is now a candidate PR in the inline-MIME plan, where a server-assembled message makes hand-built raw messages rarer but not obsolete |
 
 ## 3. The three PRs
 
@@ -47,15 +51,22 @@ Verbatim from the client that hit this, kept as the requirements source:
 ## 4. Out of scope
 
 - **`Content.Raw.DataKey`** — attach-by-reference for a whole raw MIME
-  message. `RawContentKey` covers the real use case; a raw message pulled
-  from a bucket would bypass the sender-allow-list parse we do on the
-  bytes we were handed.
+  message. `RawContentKey` covered the use case in front of us, and that is
+  the whole reason: it is **not** a safety boundary. `guardrails.RawEmail`
+  parses the *decoded* bytes, so a message read from the bucket runs the
+  identical `raw_base64` → `raw_size` → `raw_mime` → `sender_allow_list`
+  ladder (EC-14). It is now a candidate PR in
+  [email-inline-mime.md](email-inline-mime.md) §7.
 - **The media bucket.** MMS media stays on its own bucket with its own
   24-hour expiry (PRD §5.3); email attachments read from the files bucket
   only.
-- **Server-side MIME assembly.** SES already assembles `Simple` +
-  `Attachments`; writing our own multipart builder would add a MIME
-  implementation to maintain for no capability we lack.
+- ~~**Server-side MIME assembly.**~~ **Now in scope** (EC-13). This bullet
+  rested on EC-1's premise — "SES already assembles `Simple` +
+  `Attachments`, so a multipart builder buys no capability we lack" — and
+  the premise was wrong: SES's assembly is `multipart/mixed`, which cannot
+  render a `cid:` image. The capability we lack is exactly the one the
+  builder provides. Planned in
+  [email-inline-mime.md](email-inline-mime.md).
 - **Image validation beyond digests** — no decoding, re-encoding,
   dimension checks, or format sniffing of attachment bytes.
 - **Response-size cap redesign.** Digests are bounded; returning content

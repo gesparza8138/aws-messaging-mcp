@@ -2,7 +2,7 @@
 
 # `ses_send_email`
 
-Send an email via Amazon SES (sesv2 SendEmail shape); requires msg/email:send. Supports DryRun. Embed images with Simple attachments (ContentDisposition INLINE plus a ContentId the HTML cites as cid:) rather than hand-building Raw MIME; SES assembles the message itself. An attachment already in the files bucket is attached by key (RawContentKey from files_put_object or files_list_objects) instead of inline bytes; that path also requires msg/read. Raw content and decoded attachments share a 10 MB budget by default, and SES caps the assembled message at 40 MB. Verify payload integrity with ServerMetadata.content_digests (SHA-256 and byte count per attachment, or for the raw message) rather than re-reading the echoed bytes.
+Send an email via Amazon SES (sesv2 SendEmail shape); requires msg/email:send. Supports DryRun. Inline (cid:) images do NOT work through Simple attachments: SES assembles them under a multipart/mixed root, so ContentDisposition INLINE plus a ContentId is accepted and delivered but the image arrives as an ordinary attachment and the HTML's cid: reference stays unresolved (the non-blocking inline_not_rendered guardrail decision says so). The only shape that renders an image in the body today is Content.Raw carrying a hand-built multipart/related message; server-side assembly is planned (docs/plans/email-inline-mime.md). An attachment already in the files bucket is attached by key (RawContentKey from files_put_object or files_list_objects) instead of inline bytes; that path also requires msg/read. Raw content and decoded attachments share a 10 MB budget by default, and SES caps the assembled message at 40 MB. Verify payload integrity with ServerMetadata.content_digests (SHA-256 and byte count per attachment, or for the raw message) rather than re-reading the echoed bytes.
 
 ## Input schema
 
@@ -44,11 +44,11 @@ Send an email via Amazon SES (sesv2 SendEmail shape); requires msg/email:send. S
                     "type": "string"
                   },
                   "ContentDisposition": {
-                    "description": "Either ATTACHMENT (default) or INLINE; INLINE with ContentId lets HTML reference the image as \u003cimg src=\"cid:...\"\u003e. Case-sensitive.",
+                    "description": "Either ATTACHMENT (default) or INLINE; INLINE does NOT render the image in the body today, because SES assembles Simple attachments under multipart/mixed rather than the multipart/related a cid: reference needs - send Content.Raw with a hand-built multipart/related message for that. Case-sensitive.",
                     "type": "string"
                   },
                   "ContentId": {
-                    "description": "Content-ID the HTML body cites as cid:\u003cvalue\u003e; pair it with ContentDisposition INLINE",
+                    "description": "Content-ID recorded on the attachment part; a cid:\u003cvalue\u003e reference in the HTML body does not resolve to it, because SES assembles Simple attachments under multipart/mixed - use Content.Raw with a multipart/related message for a rendered inline image",
                     "type": "string"
                   },
                   "ContentTransferEncoding": {

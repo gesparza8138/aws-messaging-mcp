@@ -282,8 +282,12 @@ func TestTools(t *testing.T) {
 }
 
 // TestAttachByReference: an object already in the files bucket becomes an
-// inline (cid:) email attachment by key — no bytes through the model — and
-// the dry run proves the server fetched exactly those bytes.
+// email attachment by key — no bytes through the model — and the dry run
+// proves the server fetched exactly those bytes. The INLINE disposition and
+// ContentId below ride on the part but do not render as a cid: image: SES
+// assembles Simple attachments under multipart/mixed
+// (docs/plans/email-inline-mime.md). This test only covers the fetch, and a
+// DryRun never leaves the server, so it could not have caught that.
 func TestAttachByReference(t *testing.T) {
 	e := load(t)
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)

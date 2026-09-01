@@ -148,6 +148,19 @@ func (d Deps) sendEmail() mcp.ToolHandlerFor[schemas.SendEmailInput, SendEmailOu
 					result.Add(dec)
 				}
 			}
+			// A warning, not a refusal: the send is valid and the bytes arrive
+			// intact, so this rides along in ServerMetadata to correct a caller
+			// who expected a rendered image (RecipientsAllowed's "allow-list
+			// disabled" is the same allowed-with-a-reason shape). It goes when
+			// the server assembles the multipart/related itself
+			// (docs/plans/email-inline-mime.md).
+			for _, a := range resolved {
+				if a.ContentDisposition == "INLINE" || a.ContentId != "" {
+					result.Add(guardrails.Decision{Name: "inline_not_rendered", Allowed: true,
+						Reason: "SES assembles Simple attachments under multipart/mixed, so a cid: reference does not resolve and the image arrives as an ordinary attachment; send Content.Raw with a multipart/related message for a true inline image"})
+					break
+				}
+			}
 		}
 		meta := ServerMetadata{Guardrails: result.Decisions, DryRun: in.DryRun}
 		out := SendEmailOutput{ServerMetadata: meta}

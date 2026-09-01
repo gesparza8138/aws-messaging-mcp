@@ -37,10 +37,14 @@ CloudFront signature in the URL is the access control.
 ## Attaching a shared object to an email
 
 A shared object can go out as an email attachment without being uploaded
-again: pass its key as `RawContentKey` in a `ses_send_email` attachment
-(`ContentDisposition: INLINE` plus a `ContentId` makes it a `cid:` image) and
+again: pass its key as `RawContentKey` in a `ses_send_email` attachment and
 the server reads the bytes from the bucket itself — they never pass through
-the model. The caller needs `msg/read` as well as `msg/email:send`, the key
+the model. It arrives as an ordinary attachment: `ContentDisposition: INLINE`
+plus a `ContentId` does not render it in the body, because SES assembles
+`Simple` attachments under `multipart/mixed` rather than the
+`multipart/related` a `cid:` reference needs
+([plan](plans/email-inline-mime.md)).
+The caller needs `msg/read` as well as `msg/email:send`, the key
 must be under `shared/`, and the object must fit the 10 MB attachment budget.
 An object whose expiry has passed is refused even though the daily cleanup
 has not deleted it yet — the link is dead, so the attachment is too.
