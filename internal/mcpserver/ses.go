@@ -3,11 +3,18 @@ package mcpserver
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
+	"errors"
 	"fmt"
+	"io"
 	"reflect"
+	"strings"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
+	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/aws/aws-sdk-go-v2/service/sesv2"
 	sestypes "github.com/aws/aws-sdk-go-v2/service/sesv2/types"
 	"github.com/google/jsonschema-go/jsonschema"
@@ -61,6 +68,21 @@ func sendEmailOutputSchema() *jsonschema.Schema {
 	return schema
 }
 
+// blockedResult turns the first blocking decision into the tool error, with the
+// decisions so far attached so the model can explain the refusal (PRD 8). It is
+// called twice: once before referenced attachments are fetched, once after.
+func blockedResult(result guardrails.Result, dryRun bool) (*mcp.CallToolResult, bool) {
+	blocked, isBlocked := result.Blocked()
+	if !isBlocked {
+		return nil, false
+	}
+	res := toolError("blocked by guardrail " + blocked.Name + ": " + blocked.Reason)
+	res.StructuredContent = SendEmailOutput{
+		ServerMetadata: ServerMetadata{Guardrails: result.Decisions, DryRun: dryRun},
+	}
+	return res, true
+}
+
 func (d Deps) sendEmail() mcp.ToolHandlerFor[schemas.SendEmailInput, SendEmailOutput] {
 	return func(ctx context.Context, _ *mcp.CallToolRequest, in schemas.SendEmailInput) (*mcp.CallToolResult, SendEmailOutput, error) {
 		if res := requireScope(ctx, "msg/email:send"); res != nil {
@@ -69,9 +91,17 @@ func (d Deps) sendEmail() mcp.ToolHandlerFor[schemas.SendEmailInput, SendEmailOu
 		s := d.Settings
 		var result guardrails.Result
 
-		// Shape rules first (PRD 5.3): exactly one of Simple / Raw.
+		// Shape rules first (PRD 5.3): exactly one of Simple / Raw, and per
+		// attachment exactly one of RawContent / RawContentKey.
 		if in.Content == nil || (in.Content.Simple == nil) == (in.Content.Raw == nil) {
 			return toolError("Content must contain exactly one of Simple or Raw"), SendEmailOutput{}, nil
+		}
+		if in.Content.Simple != nil {
+			for i, a := range in.Content.Simple.Attachments {
+				if (a.RawContent == "") == (a.RawContentKey == "") {
+					return toolError(fmt.Sprintf("attachment %d must set exactly one of RawContent or RawContentKey", i)), SendEmailOutput{}, nil
+				}
+			}
 		}
 		recipients := in.Destination.All()
 		result.Add(guardrails.MaxRecipients(len(recipients), s.MaxRecipients))
@@ -88,9 +118,28 @@ func (d Deps) sendEmail() mcp.ToolHandlerFor[schemas.SendEmailInput, SendEmailOu
 			}
 		} else {
 			result.Add(guardrails.SenderAllowed(in.FromEmailAddress, s.SESSenderAddresses))
-			if len(in.Content.Simple.Attachments) > 0 {
-				atts := make([]guardrails.AttachmentInput, len(in.Content.Simple.Attachments))
-				for i, a := range in.Content.Simple.Attachments {
+		}
+		if d.Limiter != nil {
+			result.Add(d.Limiter.Check(ctx, "ses_send_email"))
+		}
+		// Everything above is free to evaluate, so a refusal is decided before
+		// a referenced attachment costs an S3 read: the rate limiter is the
+		// cost control (PRD §8), and fetching first would let a throttled
+		// caller keep reading the files bucket.
+		if res, blocked := blockedResult(result, in.DryRun); blocked {
+			return res, SendEmailOutput{}, nil
+		}
+		if in.Content.Simple != nil {
+			// From here a referenced attachment is indistinguishable from an
+			// inline one: same size budget, same digest, same builder.
+			resolved, res := d.resolveAttachments(ctx, in.Content.Simple.Attachments)
+			if res != nil {
+				return res, SendEmailOutput{}, nil
+			}
+			in.Content.Simple.Attachments = resolved
+			if len(resolved) > 0 {
+				atts := make([]guardrails.AttachmentInput, len(resolved))
+				for i, a := range resolved {
 					atts[i] = guardrails.AttachmentInput{FileName: a.FileName, RawContent: a.RawContent}
 				}
 				var decisions []guardrails.Decision
@@ -100,14 +149,9 @@ func (d Deps) sendEmail() mcp.ToolHandlerFor[schemas.SendEmailInput, SendEmailOu
 				}
 			}
 		}
-		if d.Limiter != nil {
-			result.Add(d.Limiter.Check(ctx, "ses_send_email"))
-		}
 		meta := ServerMetadata{Guardrails: result.Decisions, DryRun: in.DryRun}
 		out := SendEmailOutput{ServerMetadata: meta}
-		if blocked, isBlocked := result.Blocked(); isBlocked {
-			res := toolError("blocked by guardrail " + blocked.Name + ": " + blocked.Reason)
-			res.StructuredContent = out
+		if res, blocked := blockedResult(result, in.DryRun); blocked {
 			return res, SendEmailOutput{}, nil
 		}
 
@@ -133,6 +177,96 @@ func (d Deps) sendEmail() mcp.ToolHandlerFor[schemas.SendEmailInput, SendEmailOu
 		out.MessageID = aws.ToString(resp.MessageId)
 		return nil, out, nil
 	}
+}
+
+// resolveAttachments replaces every RawContentKey with the object's bytes,
+// base64-encoded into a copy of the attachment, and returns the attachments
+// unchanged when none is referenced. Re-encoding costs one pass over bytes we
+// already hold and keeps a single input shape for the guardrails, which is
+// worth more than the saved allocation: referenced attachments then run the
+// exact same decode, size, and digest path as inline ones.
+func (d Deps) resolveAttachments(ctx context.Context, atts []schemas.Attachment) ([]schemas.Attachment, *mcp.CallToolResult) {
+	referenced := false
+	for _, a := range atts {
+		referenced = referenced || a.RawContentKey != ""
+	}
+	if !referenced {
+		return atts, nil
+	}
+	if d.Files == nil {
+		return nil, toolError("RawContentKey needs the files store, which this server is not configured with (no files_* tools); send the bytes inline as RawContent instead")
+	}
+	// Reading the files bucket is a files-store read, so an email-only token
+	// must not be able to exfiltrate a shared object through an attachment.
+	if res := requireScope(ctx, "msg/read"); res != nil {
+		return nil, res
+	}
+	resolved := make([]schemas.Attachment, len(atts))
+	copy(resolved, atts)
+	for i, a := range resolved {
+		if a.RawContentKey == "" {
+			continue
+		}
+		body, res := d.fetchSharedObject(ctx, i, a.RawContentKey)
+		if res != nil {
+			return nil, res
+		}
+		resolved[i].RawContent = base64.StdEncoding.EncodeToString(body)
+	}
+	return resolved, nil
+}
+
+// fetchSharedObject reads one shared object into memory for attachment i.
+// HeadObject comes first so an expired or oversize object is refused before
+// its bytes are downloaded — the files bucket allows objects far larger than
+// the email budget (PRD §8).
+func (d Deps) fetchSharedObject(ctx context.Context, i int, key string) ([]byte, *mcp.CallToolResult) {
+	if !strings.HasPrefix(key, "shared/") {
+		return nil, toolError(fmt.Sprintf("attachment %d: Key must be under shared/", i))
+	}
+	s := d.Settings
+	head, err := d.Files.HeadObject(ctx, &s3.HeadObjectInput{
+		Bucket: aws.String(s.FilesBucket), Key: aws.String(bucketPrefix + key),
+	})
+	if err != nil {
+		if objectMissing(err) {
+			return nil, toolError(fmt.Sprintf("attachment %d: no object %s in the files bucket", i, key))
+		}
+		return nil, toolError(fmt.Sprintf("attachment %d: reading %s failed: %s", i, key, awsclients.ErrorText(err)))
+	}
+	// Cleanup runs daily, so an object whose expiry has passed is still here;
+	// attaching it would outlive the link the owner set. A missing or
+	// unparseable stamp is left alone, exactly as CleanupFiles leaves it.
+	if expires, parseErr := time.Parse(time.RFC3339, head.Metadata[expiresAtMetaKey]); parseErr == nil && !expires.After(time.Now()) {
+		return nil, toolError(fmt.Sprintf("attachment %d: the link for %s expired at %s and the object is awaiting cleanup; re-upload it to attach it",
+			i, key, head.Metadata[expiresAtMetaKey]))
+	}
+	if size := aws.ToInt64(head.ContentLength); size > int64(s.EmailMaxRawBytes) {
+		return nil, toolError(fmt.Sprintf("attachment %d: %s is %d bytes, over the %d-byte attachment budget", i, key, size, s.EmailMaxRawBytes))
+	}
+	obj, err := d.Files.GetObject(ctx, &s3.GetObjectInput{
+		Bucket: aws.String(s.FilesBucket), Key: aws.String(bucketPrefix + key),
+	})
+	if err != nil {
+		if objectMissing(err) {
+			return nil, toolError(fmt.Sprintf("attachment %d: %s disappeared between the size check and the read (expiry cleanup?); re-upload it", i, key))
+		}
+		return nil, toolError(fmt.Sprintf("attachment %d: reading %s failed: %s", i, key, awsclients.ErrorText(err)))
+	}
+	defer func() { _ = obj.Body.Close() }()
+	body, err := io.ReadAll(obj.Body)
+	if err != nil {
+		return nil, toolError(fmt.Sprintf("attachment %d: reading %s failed: %s", i, key, err))
+	}
+	return body, nil
+}
+
+// objectMissing reports the two shapes S3 uses for "not there": NotFound from
+// HeadObject, NoSuchKey from GetObject.
+func objectMissing(err error) bool {
+	var notFound *s3types.NotFound
+	var noSuchKey *s3types.NoSuchKey
+	return errors.As(err, &notFound) || errors.As(err, &noSuchKey)
 }
 
 // contentDigests hashes the decoded binary parts of one send: the raw MIME
