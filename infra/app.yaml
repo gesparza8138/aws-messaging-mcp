@@ -670,9 +670,18 @@ Resources:
                   Action:
                     - sms-voice:SendTextMessage
                     - sms-voice:SendMediaMessage
+                  # Every resource the send touches has to be listed, not just
+                  # the origination identity: the server injects the protect
+                  # configuration into each call (PRD 8), and without it here
+                  # the whole request is denied for the action rather than for
+                  # the missing resource, which reads like the grant is absent.
                   Resource:
                     - !Ref OriginationPhoneArn
                     - !Sub arn:${AWS::Partition}:sms-voice:${AWS::Region}:${AWS::AccountId}:configuration-set/${EumConfigurationSet}
+                    - !If
+                      - HasProtectConfig
+                      - !Sub arn:${AWS::Partition}:sms-voice:${AWS::Region}:${AWS::AccountId}:protect-configuration/${ProtectConfigurationId}
+                      - !Ref AWS::NoValue
                 - !Ref AWS::NoValue
               - Sid: EumRead
                 Effect: Allow
