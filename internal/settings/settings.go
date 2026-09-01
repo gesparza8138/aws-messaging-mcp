@@ -79,8 +79,17 @@ type Settings struct {
 	// EUMConfigurationSet is injected into every SMS/MMS send.
 	EUMConfigurationSet string
 	// OriginationIdentity is the server's toll-free number (E.164); the only
-	// origination the tools accept (PRD S1).
+	// origination the tools accept (PRD S1). It is what a caller names and what
+	// the opt-in page shows, but it is not what the send is authorized against
+	// - see OriginationIdentityARN.
 	OriginationIdentity string
+	// OriginationIdentityARN is the same number as an ARN, sent to the API when
+	// set. An E.164 string does not resolve to the phone-number resource during
+	// authorization, so a least-privilege policy scoped to that ARN (PRD S1)
+	// never matches and every send is denied for the action rather than for the
+	// resource. Empty falls back to OriginationIdentity for stages with no
+	// number configured.
+	OriginationIdentityARN string
 	// ProtectConfigurationID is injected into every SMS/MMS send.
 	ProtectConfigurationID string
 	// SMSMaxPrice is the per-message USD ceiling (PRD §8).
@@ -150,6 +159,7 @@ func FromEnv(lookup Lookup) Settings {
 		EmailMaxRawBytes:       intOr(get("EMAIL_MAX_RAW_BYTES", ""), 10*1024*1024),
 		EUMConfigurationSet:    get("EUM_CONFIGURATION_SET", ""),
 		OriginationIdentity:    get("ORIGINATION_IDENTITY", ""),
+		OriginationIdentityARN: get("ORIGINATION_IDENTITY_ARN", ""),
 		ProtectConfigurationID: get("PROTECT_CONFIGURATION_ID", ""),
 		SMSMaxPrice:            get("SMS_MAX_PRICE", "0.05"),
 		MediaBucket:            get("MEDIA_BUCKET", ""),
@@ -215,4 +225,14 @@ func splitCSV(value string) []string {
 		}
 	}
 	return out
+}
+
+// SendingIdentity is the value the EUM API is called with: the ARN when one is
+// configured, so authorization resolves the phone-number resource a scoped
+// policy names, otherwise the E.164 number.
+func (s Settings) SendingIdentity() string {
+	if s.OriginationIdentityARN != "" {
+		return s.OriginationIdentityARN
+	}
+	return s.OriginationIdentity
 }
