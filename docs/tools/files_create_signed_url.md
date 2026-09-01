@@ -102,6 +102,45 @@ Sign (or re-sign) a shared object into a CloudFront download link, optionally IP
             "null",
             "array"
           ]
+        },
+        "mime_structure": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "bytes": {
+                "type": "integer"
+              },
+              "content_id": {
+                "type": "string"
+              },
+              "content_type": {
+                "type": "string"
+              },
+              "depth": {
+                "type": "integer"
+              },
+              "disposition": {
+                "type": "string"
+              },
+              "filename": {
+                "type": "string"
+              },
+              "path": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "path",
+              "depth",
+              "content_type",
+              "bytes"
+            ],
+            "type": "object"
+          },
+          "type": [
+            "null",
+            "array"
+          ]
         }
       },
       "required": [

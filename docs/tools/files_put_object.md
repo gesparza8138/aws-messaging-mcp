@@ -134,6 +134,45 @@ Upload an inline file (≤4 MB) and get back a CloudFront-signed download link; 
             "null",
             "array"
           ]
+        },
+        "mime_structure": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "bytes": {
+                "type": "integer"
+              },
+              "content_id": {
+                "type": "string"
+              },
+              "content_type": {
+                "type": "string"
+              },
+              "depth": {
+                "type": "integer"
+              },
+              "disposition": {
+                "type": "string"
+              },
+              "filename": {
+                "type": "string"
+              },
+              "path": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "path",
+              "depth",
+              "content_type",
+              "bytes"
+            ],
+            "type": "object"
+          },
+          "type": [
+            "null",
+            "array"
+          ]
         }
       },
       "required": [

@@ -386,6 +386,25 @@ func TestAttachByReference(t *testing.T) {
 		t.Errorf("the uploaded object's bytes are not in the assembled message:\n%s", message)
 	}
 
+	// The same tree, reported rather than parsed out of the bytes: when an
+	// image does not render, mime_structure is what the caller reads instead of
+	// mailing a human and asking. Here it has to agree with the message above.
+	structure, _ := dig(out, "ServerMetadata")["mime_structure"].([]any)
+	related, sibling := "", false
+	for _, p := range structure {
+		part, _ := p.(map[string]any)
+		if part["content_type"] == "multipart/related" {
+			related, _ = part["path"].(string)
+		}
+		if part["content_id"] == "e2e-pixel" {
+			path, _ := part["path"].(string)
+			sibling = related != "" && strings.HasPrefix(path, related+".")
+		}
+	}
+	if !sibling {
+		t.Errorf("mime_structure must place the image inside the related group: %v", structure)
+	}
+
 	// One digest for the attachment as it arrived, one for the message it was
 	// assembled into.
 	digests, _ := dig(out, "ServerMetadata")["content_digests"].([]any)

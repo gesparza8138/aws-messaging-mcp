@@ -1,10 +1,14 @@
 # Inline-MIME plan — make `cid:` images actually render
 
-Status: **in progress**. PR A (this plan, the docs correction, and the
-non-blocking `inline_not_rendered` warning), PR B (the `internal/mimebuild`
-assembler plus the inline guardrails, both unwired), and PR C (the assembler
-wired into `ses_send_email`, which is the behaviour fix) are shipped; PRs D–E
-are not started. Post-M5 work on `ses_send_email` only ([PRD](../PRD.md) §5.3, §8):
+Status: **code complete, acceptance open**. All five PRs are shipped: A (this
+plan, the docs correction, and the non-blocking `inline_not_rendered`
+warning), B (the `internal/mimebuild` assembler plus the inline guardrails,
+both unwired), C (the assembler wired into `ses_send_email`, which is the
+behaviour fix), D (`ServerMetadata.mime_structure`), and E
+(`Content.Raw.DataKey`). What is left is not code: §8's acceptance criterion
+needs the owner to open the delivered message in Gmail (web, iOS, Android),
+Apple Mail, and Outlook and record the five results here.
+Post-M5 work on `ses_send_email` only ([PRD](../PRD.md) §5.3, §8):
 no new tools, no infrastructure, no new environment variable. It reopens
 what [email-composition.md](email-composition.md) claimed to have closed
 (EC-13) after a client proved the claim false in production. Exit criteria:
@@ -202,8 +206,8 @@ has opinions) arriving through a different door.
 | A | `fix: correct the inline-CID claim and warn callers` | This plan; the tool description, `internal/schemas` doc comments, PRD §5.3, `docs/server.md`, `docs/files.md`, the e2e comment, and `email-composition.md` (EC-13, EC-14, §4) corrected; a non-blocking `inline_not_rendered` guardrail decision on any `INLINE`/`ContentId` attachment; PRD Appendix C row | **shipped** |
 | B | `feat: internal/mimebuild multipart assembler` | The assembler and the tree walker, plus `internal/guardrails/email.go` string validation (`attachment_fields`, `inline_content_id`, `inline_needs_html`, `inline_cid_refs`). Unwired: nothing calls it, `ses_send_email` behaves exactly as it does today. Tests include the structural parse of §8 | **shipped** |
 | C | `feat: assemble multipart/related for inline attachments` | Wire the assembler into `sendEmail` behind the "any `INLINE` or `ContentId`" condition; clear `ReplyToAddresses` on that path; the assembled-size check (§9); remove the `inline_not_rendered` warning; correct every doc PR A corrected, again; e2e sends a real inline image and the owner confirms rendering | **shipped** |
-| D | `feat: ServerMetadata.mime_structure` | The flat part list (§6) on `DryRun` and real sends, for both the assembled path and a caller-supplied `Content.Raw` (R3) | planned |
-| E | `feat: Content.Raw.DataKey` | Attach-by-reference for a whole raw MIME message (R2, EC-14), on the same read path as `RawContentKey` | planned |
+| D | `feat: ServerMetadata.mime_structure` | The flat part list (§6) on `DryRun` and real sends, for both the assembled path and a caller-supplied `Content.Raw` (R3); a direct test that `sendEmailOutputSchema()` still infers, and the full-chain assertion that a result carrying it is a result and not a JSON-RPC error | **shipped** |
+| E | `feat: Content.Raw.DataKey` | Attach-by-reference for a whole raw MIME message (R2, EC-14), on the same read path as `RawContentKey`; `guardrails.RawEmail` split so the ladder from `raw_size` on is shared | **shipped** |
 
 ## 8. Verification
 
@@ -216,13 +220,16 @@ is that we accepted a proxy (an SDK struct field) for the thing itself.
 | --- | --- |
 | **Structural parse** (unit, PR B) | Re-read the assembled bytes with `mime/multipart.Reader` and assert the tree: root type, `type=` parameter, part order, `Content-ID` on the inline parts, `Content-Disposition` on the attachments, no line over 998 octets. **Nothing in the repo does this today** — every existing test asserts on the request we build, never on bytes parsed back — and it is the gate that would have caught EC-13 if the message had been ours to inspect |
 | **Injection tests** (unit, PR B) | `\r\n`, `\n`, and long-header attempts in `FileName`, `Subject`, `ContentDescription`, `ContentId`, and every address field are refused, not encoded into the message |
-| **Full-chain** (PR C) | The MCP client round trip, as EC-8 taught: a handler-level test bypasses the SDK's validating wrapper and would miss an output-schema fault |
+| **Full-chain** (PRs C–E) | The MCP client round trip, as EC-8 taught: a handler-level test bypasses the SDK's validating wrapper and would miss an output-schema fault. PR D asserts that a `DryRun` carrying `mime_structure` comes back as a *result* rather than a JSON-RPC error, and PR E that a `Content.Raw` carrying only `DataKey` survives the SDK's *input* validation now that `Data` is no longer required (EC-29) |
 | **e2e** (PR C) | A real send to the owner's mailbox with a real PNG, and the owner opens it in each client. Recorded in this document with the date, like the M5 drills |
 
 PR C shipped the automated half: `TestAttachByReference` now parses the
 assembled message out of the `DryRun` echo and then sends the same inline
-image for real, through `awaitDelivery`. **The acceptance criterion is still
-open** — it needs the owner to open that message in Gmail (web, iOS, Android),
+image for real, through `awaitDelivery`. PR D added the other side of that
+assertion — the reported `mime_structure` must place the image inside the
+related group the parsed bytes show — so the diagnostic is verified against
+the deployed server and not only against a unit fixture. **The acceptance
+criterion is still open** — it needs the owner to open that message in Gmail (web, iOS, Android),
 Apple Mail, and Outlook and confirm the image renders in the body. Record the
 date and the five results here when that is done; until then this plan has
 fixed the mechanism the diagnosis identified, not yet proved the outcome.
@@ -259,3 +266,8 @@ Continuing the EC-N sequence of
 | EC-22 | **`contentDigests` would have erased every per-attachment digest on the assembled path.** Its first line early-returns a single `{part:"raw"}` digest whenever a decoded whole message is present, and the assembled message is exactly that | The assembled bytes are a separate parameter with their own name, appended *after* the per-attachment loop; `"raw"` stays reserved for a caller-supplied `Content.Raw`. The digests are the one diagnostic the reporting client singled out as working ("let us prove payload integrity and rule it out as a cause within one call"), and replacing per-attachment hashes with one whole-message hash would have taken that away in the same PR that fixed the rendering. PR C |
 | EC-23 | **`Reply-To` and `Bcc` move in opposite directions when the content shape changes.** `Reply-To` becomes a header we write, so the API parameter must be dropped or SES adds a second one (RFC 5322 §3.6 permits one, and clients disagree about which wins); `Bcc` must stay on `Destination.BccAddresses`, because a header would be delivered to every recipient | Both are one line, and both fail silently in opposite ways — a duplicate header nobody notices, or every hidden recipient disclosed to everybody. Each has its own test asserting the header *and* the API parameter, not one or the other. PR C |
 | EC-24 | **The 40 MB check cannot be reached through attachments at all.** `EmailMaxRawBytes` caps decoded attachments at 10 MB, which assembles to ~13.7 MB, so `assembled_size` can only ever fire on an enormous `Text`/`Html` body — those travel as JSON and no guardrail meters them | It is a backstop over the one unmetered input, not a second attachment budget, which is also why reusing the 10 MB number would have been a regression rather than a tightening (§9). Testing it at the handler would mean building a 40 MB message, so `assembledSize` is its own function and is tested directly at both sides of the boundary. PR C |
+| EC-25 | **§6 was wrong about which test catches the panic.** `sendEmailOutputSchema()`'s `panic` fires inside `NewServer`, and *nothing in `internal/mcpserver` constructs a server*: every test there calls `d.sendEmail()` directly. The package's own tests would have stayed green while `cmd/gendocs`, the Lambda cold start, and the `internal/httpapi` full-chain tests died | `TestSendEmailOutputSchemaStaysInferable` calls `sendEmailOutputSchema()` directly and recovers, so the flat-`Part` rule is defended by a named test in the package that owns it rather than as a side effect three packages away. PR D |
+| EC-26 | **The assembled tree is *reported*, not re-read.** `Assemble` already returns the part list it wrote, so `mime_structure` for an inline send cannot disagree with the bytes; `Walk` is used only for a message the server did not build (`Content.Raw`, inline or by key) | Which makes the round-trip test of PR B load-bearing in a new way: it is what lets the two producers of the same shape be trusted to agree. The walk of untrusted bytes is bounded (depth 10, 200 parts) and a failure omits the field instead of failing the send — the raw ladder has already decided deliverability, and refusing a send because a *diagnostic* could not be produced would invert the priority. PR D |
+| EC-27 | **"Refuse before you read" cannot be total for `Raw.DataKey`.** The property PR3 of `email-composition.md` established — every free guardrail decided before an S3 read, so a throttled caller cannot drive bucket reads — holds for recipients, the recipient count, and the rate limit, but not for `sender_allow_list`: the `From` header it checks is *inside* the object being read | So that one decision moves after the fetch for this shape alone, and the comment at the first `blockedResult` says so rather than continuing to claim a property the code no longer has in full. The cost of the exception is bounded: an allow-listed recipient, under the rate limit, can cause one `HeadObject` plus one `GetObject` of an object already in the owner's own bucket. PR E |
+| EC-28 | **Splitting `RawEmail` makes the *absence* of `raw_base64` the honest report.** A `DataKey` message never was base64, so `RawEmailBytes` starts at `raw_size` and the ladder has three rungs instead of four — reporting `raw_base64: allowed` would claim a check that never ran, and skipping it silently would leave a caller wondering which rung was missing | The ladder is the caller's map of what was actually checked (PR A's reason for splitting it into stages in the first place), so a shorter ladder for a different input shape is the correct output, documented in the schema and in `docs/server.md`. The 100 %-per-function gate cost nothing here: both entry points reach the shared function. PR E |
+| EC-29 | **`Data` had to become `,omitempty` or a `DataKey`-only call never reaches the handler.** `jsonschema` marks a field without `omitempty` as `required`, so the SDK's *input* validation would refuse `Content.Raw: {"DataKey": …}` before the shape check could phrase a readable error | Exactly what happened to `RawContent` when `RawContentKey` arrived, one level up and one release later. The full-chain test is the one that proves it, because a handler-level test never sees the SDK's validating wrapper. PR E |

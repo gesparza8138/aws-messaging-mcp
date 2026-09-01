@@ -195,3 +195,41 @@ func TestRawEmail(t *testing.T) {
 		}
 	}
 }
+
+// RawEmailBytes is what Content.Raw.DataKey runs, over a message read out of
+// the files bucket. Same ladder from raw_size on, and no raw_base64 rung: those
+// bytes never were base64, so there is nothing for it to decide.
+func TestRawEmailBytes(t *testing.T) {
+	allow := []string{"mcp@example.com"}
+	message := []byte("From: Gabe <mcp@example.com>\r\nTo: o@x.com\r\nSubject: hi\r\n\r\nbody\r\n")
+	decisions := RawEmailBytes(message, 1024, allow)
+	for _, d := range decisions {
+		if d.Name == "raw_base64" {
+			t.Fatalf("nothing was base64-encoded: %+v", decisions)
+		}
+		if !d.Allowed {
+			t.Fatalf("valid message blocked: %+v", d)
+		}
+	}
+	for _, name := range []string{"raw_size", "raw_mime", "sender_allow_list"} {
+		decisionByName(t, decisions, name)
+	}
+	// The three ways it refuses, each naming its own rung.
+	for _, tc := range []struct {
+		name    string
+		message []byte
+		maximum int
+		blocked string
+	}{
+		{"oversize", message, 10, "raw_size"},
+		{"unparsable MIME", []byte("\x00\x01 not a mime message"), 1024, "raw_mime"},
+		{"missing From", []byte("To: o@x.com\r\n\r\nbody\r\n"), 1024, "sender_allow_list"},
+		{"disallowed sender", []byte("From: evil@x.com\r\n\r\nbody\r\n"), 1024, "sender_allow_list"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if d := decisionByName(t, RawEmailBytes(tc.message, tc.maximum, allow), tc.blocked); d.Allowed || d.Reason == "" {
+				t.Fatalf("%s must block with a reason: %+v", tc.blocked, d)
+			}
+		})
+	}
+}

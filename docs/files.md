@@ -49,9 +49,15 @@ HTML never references still arrives as an ordinary attachment (the
 `inline_cid_refs` decision says so), and a `cid:` the message does not declare
 is refused.
 The caller needs `msg/read` as well as `msg/email:send`, the key
-must be under `shared/`, and the object must fit the 10 MB attachment budget.
+must be under `shared/`, and the object must fit the 10 MB email budget.
 An object whose expiry has passed is refused even though the daily cleanup
 has not deleted it yet — the link is dead, so the attachment is too.
+
+A whole hand-built MIME message can be uploaded and referenced the same way,
+as `Content.Raw.DataKey` instead of `Content.Raw.Data` (exactly one of the
+two). Same read path, same scope, same expiry and size checks — it exists
+because inlining a message costs base64 twice over, so a 75 KB image reaches
+~156,000 characters in one string parameter.
 
 ## What is and is not behind CloudFront
 
