@@ -99,9 +99,19 @@ func TestFilesTools(t *testing.T) {
 		t.Fatalf("signed download: %d %q", code, body)
 	}
 
+	// The replacement must differ from what is already there: overwriting a
+	// signature character with a constant "X" is a no-op ~1/64 of the time
+	// (whenever that character already is an X), and the "tampered" URL is
+	// then byte-identical to the valid one and rightly returns 200 - which
+	// this test once reported as a broken key group. Both cases stay inside
+	// CloudFront's base64 alphabet, so the request reaches the verifier.
 	tampered := signedURL
 	if i := strings.Index(tampered, "Signature="); i > 0 {
-		tampered = tampered[:i+15] + "X" + tampered[i+16:]
+		flip := byte('X')
+		if tampered[i+15] == flip {
+			flip = 'x'
+		}
+		tampered = tampered[:i+15] + string(flip) + tampered[i+16:]
 	}
 	if code, _ := fetch(t, tampered); code != http.StatusForbidden {
 		t.Fatalf("tampered signature: %d, want 403", code)
