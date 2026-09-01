@@ -2,7 +2,7 @@
 
 Living checklist of everything in flight or waiting on someone. Update it
 whenever an item lands (check it off with the date) or a new wait appears.
-Last updated: 2026-08-30 (post-apex-site).
+Last updated: 2026-08-31 (post-email-composition).
 
 ## Owner actions
 
@@ -39,6 +39,14 @@ Last updated: 2026-08-30 (post-apex-site).
   PRs #66-#71). Alarms/budget/dashboard live, both drills executed with two
   rotation defects found and fixed, subsystem guides published, reserved
   concurrency active. **The PRD's build scope is complete.**
+- [x] **Email composition** (merged to `main` 2026-08-31; PRs #76, #80 —
+  #77/#78/#79 were casualties of stacked bases being deleted on merge).
+  Inline CID attachments, attachment guardrails, split raw decisions,
+  content digests, and attach-by-reference from the files bucket. Fixed
+  along the way: silently dropped attachment base64 errors, unmetered
+  attachments, and binary `DryRun` failing the SDK's output validation
+  since M2. See [email-composition.md](email-composition.md).
+  Awaiting the `v1.1.0` release (dev deploy + e2e first).
 
 ## Standing notes
 
