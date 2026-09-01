@@ -2,7 +2,7 @@
 
 # `ses_send_email`
 
-Send an email via Amazon SES (sesv2 SendEmail shape); requires msg/email:send. Supports DryRun. Embed images with Simple attachments (ContentDisposition INLINE plus a ContentId the HTML cites as cid:) rather than hand-building Raw MIME; SES assembles the message itself. Raw content and decoded attachments share a 10 MB budget by default, and SES caps the assembled message at 40 MB.
+Send an email via Amazon SES (sesv2 SendEmail shape); requires msg/email:send. Supports DryRun. Embed images with Simple attachments (ContentDisposition INLINE plus a ContentId the HTML cites as cid:) rather than hand-building Raw MIME; SES assembles the message itself. Raw content and decoded attachments share a 10 MB budget by default, and SES caps the assembled message at 40 MB. Verify payload integrity with ServerMetadata.content_digests (SHA-256 and byte count per attachment, or for the raw message) rather than re-reading the echoed bytes.
 
 ## Input schema
 
@@ -255,6 +255,32 @@ Send an email via Amazon SES (sesv2 SendEmail shape); requires msg/email:send. S
     "ServerMetadata": {
       "additionalProperties": false,
       "properties": {
+        "content_digests": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "bytes": {
+                "type": "integer"
+              },
+              "part": {
+                "type": "string"
+              },
+              "sha256": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "part",
+              "bytes",
+              "sha256"
+            ],
+            "type": "object"
+          },
+          "type": [
+            "null",
+            "array"
+          ]
+        },
         "dry_run": {
           "type": "boolean"
         },
@@ -337,14 +363,9 @@ Send an email via Amazon SES (sesv2 SendEmail shape); requires msg/email:send. S
               "additionalProperties": false,
               "properties": {
                 "Data": {
-                  "items": {
-                    "maximum": 255,
-                    "minimum": 0,
-                    "type": "integer"
-                  },
                   "type": [
                     "null",
-                    "array"
+                    "string"
                   ]
                 }
               },
@@ -394,14 +415,9 @@ Send an email via Amazon SES (sesv2 SendEmail shape); requires msg/email:send. S
                         ]
                       },
                       "RawContent": {
-                        "items": {
-                          "maximum": 255,
-                          "minimum": 0,
-                          "type": "integer"
-                        },
                         "type": [
                           "null",
-                          "array"
+                          "string"
                         ]
                       }
                     },
@@ -587,14 +603,9 @@ Send an email via Amazon SES (sesv2 SendEmail shape); requires msg/email:send. S
                         ]
                       },
                       "RawContent": {
-                        "items": {
-                          "maximum": 255,
-                          "minimum": 0,
-                          "type": "integer"
-                        },
                         "type": [
                           "null",
-                          "array"
+                          "string"
                         ]
                       }
                     },

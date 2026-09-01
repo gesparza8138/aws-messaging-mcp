@@ -81,6 +81,32 @@ Upload an inline file (≤4 MB) and get back a CloudFront-signed download link; 
     "ServerMetadata": {
       "additionalProperties": false,
       "properties": {
+        "content_digests": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "bytes": {
+                "type": "integer"
+              },
+              "part": {
+                "type": "string"
+              },
+              "sha256": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "part",
+              "bytes",
+              "sha256"
+            ],
+            "type": "object"
+          },
+          "type": [
+            "null",
+            "array"
+          ]
+        },
         "dry_run": {
           "type": "boolean"
         },
