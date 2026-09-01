@@ -22,6 +22,13 @@ const tinyPNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPh
 func skipUnlessSandboxAllows(t *testing.T, refusal string) {
 	t.Helper()
 	lower := strings.ToLower(refusal)
+	// RESOURCE_NOT_ACTIVE is the toll-free number still in carrier
+	// verification. Like the sandbox markers it is the service answering
+	// correctly about a real-world wait, not a defect the suite can act on -
+	// and the wait is tracked in docs/plans/pending.md.
+	if strings.Contains(lower, "resource_not_active") {
+		t.Skipf("the toll-free number is not ACTIVE yet (carrier verification pending): %s", refusal)
+	}
 	for _, marker := range []string{"verified", "sandbox", "destination country", "not supported"} {
 		if strings.Contains(lower, marker) {
 			t.Skipf("EUM sandbox restriction (verify the destination or leave the sandbox): %s", refusal)
