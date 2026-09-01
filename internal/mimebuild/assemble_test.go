@@ -132,7 +132,7 @@ func TestAssembleLayouts(t *testing.T) {
 			},
 			want: `multipart/related; type="text/html"
   text/html
-  image/png [inline filename=chart.png cid=<chart>]
+  image/png [inline filename=chart.png cid=<chart@example.com>]
 `,
 		},
 		{
@@ -146,7 +146,7 @@ func TestAssembleLayouts(t *testing.T) {
   text/plain
   multipart/related; type="text/html"
     text/html
-    image/png [inline filename=chart.png cid=<chart>]
+    image/png [inline filename=chart.png cid=<chart@example.com>]
 `,
 		},
 		{
@@ -161,7 +161,7 @@ func TestAssembleLayouts(t *testing.T) {
     text/plain
     multipart/related; type="text/html"
       text/html
-      image/png [inline filename=chart.png cid=<chart>]
+      image/png [inline filename=chart.png cid=<chart@example.com>]
   application/pdf [attachment filename=notes.pdf]
 `,
 		},
@@ -174,7 +174,7 @@ func TestAssembleLayouts(t *testing.T) {
 			want: `multipart/mixed
   multipart/related; type="text/html"
     text/html
-    image/png [inline filename=chart.png cid=<chart>]
+    image/png [inline filename=chart.png cid=<chart@example.com>]
   application/pdf [attachment filename=notes.pdf]
 `,
 		},
@@ -188,8 +188,8 @@ func TestAssembleLayouts(t *testing.T) {
 			},
 			want: `multipart/related; type="text/html"
   text/html
-  image/png [inline filename=chart.png cid=<a>]
-  image/png [inline filename=second.png cid=<b>]
+  image/png [inline filename=chart.png cid=<a@example.com>]
+  image/png [inline filename=second.png cid=<b@example.com>]
 `,
 		},
 		{
@@ -227,7 +227,7 @@ func TestAssembleLayouts(t *testing.T) {
 			},
 			want: `multipart/mixed
   text/plain
-  image/png [inline filename=chart.png cid=<chart>]
+  image/png [inline filename=chart.png cid=<chart@example.com>]
 `,
 		},
 		{
@@ -240,7 +240,7 @@ func TestAssembleLayouts(t *testing.T) {
 			},
 			want: `multipart/related; type="text/html"
   text/html
-  image/png [inline filename=chart.png cid=<chart>]
+  image/png [inline filename=chart.png cid=<chart@example.com>]
 `,
 		},
 		{
@@ -253,7 +253,7 @@ func TestAssembleLayouts(t *testing.T) {
 			},
 			want: `multipart/mixed
   text/html
-  image/png [attachment filename=chart.png cid=<chart>]
+  image/png [attachment filename=chart.png cid=<chart@example.com>]
 `,
 		},
 		{
@@ -345,9 +345,9 @@ func TestAssembleRoundTrip(t *testing.T) {
 		{Path: "1.1", Depth: 1, ContentType: "multipart/alternative"},
 		{Path: "1.1.1", Depth: 2, ContentType: "text/plain", Bytes: len("see the chart")},
 		{Path: "1.1.2", Depth: 2, ContentType: "multipart/related"},
-		{Path: "1.1.2.1", Depth: 3, ContentType: "text/html", Bytes: len(`<img src=3D"cid:chart">`)},
+		{Path: "1.1.2.1", Depth: 3, ContentType: "text/html", Bytes: len(`<img src=3D"cid:chart@example.com">`)},
 		{Path: "1.1.2.2", Depth: 3, ContentType: "image/png", Disposition: "inline",
-			ContentID: "chart", FileName: "chart.png", Bytes: 12},
+			ContentID: "chart@example.com", FileName: "chart.png", Bytes: 12},
 		{Path: "1.2", Depth: 1, ContentType: "application/pdf", Disposition: "attachment",
 			FileName: "notes.pdf", Bytes: 28},
 	}
@@ -454,7 +454,7 @@ func TestAssembleLineLength(t *testing.T) {
 	m.Text = strings.Repeat("long text with no newlines at all ", 100)
 	m.HTML = `<img src="cid:chart">` + strings.Repeat("<span>padding</span>", 200)
 	m.Attachments = []Attachment{
-		{FileName: "chart.png", ContentType: "image/png", ContentID: "chart",
+		{FileName: "chart.png", ContentType: "image/png", ContentID: "chart@example.com",
 			Disposition: "INLINE", Content: blob},
 	}
 	msg, _ := assemble(t, m)
@@ -515,10 +515,10 @@ Content-Type: multipart/related; boundary=BOUNDARY2; type="text/html"
 Content-Transfer-Encoding: quoted-printable
 Content-Type: text/html; charset=utf-8
 
-<img src=3D"cid:chart">
+<img src=3D"cid:chart@example.com">
 --BOUNDARY2
 Content-Disposition: inline; filename=chart.png
-Content-ID: <chart>
+Content-ID: <chart@example.com>
 Content-Transfer-Encoding: base64
 Content-Type: image/png; name=chart.png
 
@@ -547,12 +547,12 @@ func TestAssembleContentID(t *testing.T) {
 	if !bytes.Equal(bare, bracketed) {
 		t.Fatalf("the two ContentId spellings must assemble identically:\n%s\n---\n%s", bare, bracketed)
 	}
-	if !bytes.Contains(bare, []byte("Content-ID: <chart>\r\n")) {
+	if !bytes.Contains(bare, []byte("Content-ID: <chart@example.com>\r\n")) {
 		t.Fatalf("the header is always the bracketed form:\n%s", bare)
 	}
 	if _, parts := assemble(t, Message{From: "a@b.com", HTML: "<p>x</p>",
-		Attachments: []Attachment{inlineImage("<chart>")}}); parts[2].ContentID != "chart" {
-		t.Fatalf("the reported ContentID is the bare form: %+v", parts[2])
+		Attachments: []Attachment{inlineImage("<chart>")}}); parts[2].ContentID != "chart@b.com" {
+		t.Fatalf("the reported ContentID is the bare qualified form: %+v", parts[2])
 	}
 }
 

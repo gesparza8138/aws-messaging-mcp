@@ -1,13 +1,15 @@
 # Inline-MIME plan — make `cid:` images actually render
 
-Status: **code complete, acceptance open**. All five PRs are shipped: A (this
-plan, the docs correction, and the non-blocking `inline_not_rendered`
-warning), B (the `internal/mimebuild` assembler plus the inline guardrails,
-both unwired), C (the assembler wired into `ses_send_email`, which is the
-behaviour fix), D (`ServerMetadata.mime_structure`), and E
-(`Content.Raw.DataKey`). What is left is not code: §8's acceptance criterion
-needs the owner to open the delivered message in Gmail (web, iOS, Android),
-Apple Mail, and Outlook and record the five results here.
+Status: **code complete, acceptance partially confirmed**. All five PRs are
+shipped: A (this plan, the docs correction, and the non-blocking
+`inline_not_rendered` warning), B (the `internal/mimebuild` assembler plus the
+inline guardrails, both unwired), C (the assembler wired into
+`ses_send_email`, which is the behaviour fix), D
+(`ServerMetadata.mime_structure`), and E (`Content.Raw.DataKey`), plus a
+follow-up from the field that qualifies bare `Content-ID`s and opens the
+`ServerMetadata` envelope (EC-30, EC-31). §8 now records Gmail rendering the
+image inline; Apple Mail, Outlook, and Gmail's mobile apps are still to be
+checked.
 Post-M5 work on `ses_send_email` only ([PRD](../PRD.md) §5.3, §8):
 no new tools, no infrastructure, no new environment variable. It reopens
 what [email-composition.md](email-composition.md) claimed to have closed
@@ -160,6 +162,11 @@ of R1. (The client's third attempt used the angle-bracket form on the
 assumption that it might be the difference. It was not, but it should never
 have been a question.)
 
+**Superseded in part by EC-30**: brackets are still optional, but the id
+itself is no longer left bare — `Content-ID` is a msg-id and Gmail requires
+the `@`, so a bare id is qualified to `id@<sender-domain>` in the header and
+in the HTML's `cid:` references alike.
+
 ## 5. Where the code goes
 
 New package **`internal/mimebuild`** (standard library only —
@@ -228,11 +235,39 @@ assembled message out of the `DryRun` echo and then sends the same inline
 image for real, through `awaitDelivery`. PR D added the other side of that
 assertion — the reported `mime_structure` must place the image inside the
 related group the parsed bytes show — so the diagnostic is verified against
-the deployed server and not only against a unit fixture. **The acceptance
-criterion is still open** — it needs the owner to open that message in Gmail (web, iOS, Android),
-Apple Mail, and Outlook and confirm the image renders in the body. Record the
-date and the five results here when that is done; until then this plan has
-fixed the mechanism the diagnosis identified, not yet proved the outcome.
+the deployed server and not only against a unit fixture.
+
+### Field results
+
+**2026-09-01 — Gmail confirmed, and it took an A/B to get there.** The first
+production use after v1.2.0 came back with a controlled comparison on one
+message shape, the `ContentId` the only variable:
+
+| `ContentId` sent | Header emitted | Gmail |
+| --- | --- | --- |
+| `weekend-chart` | `Content-ID: <weekend-chart>` | **Not rendered** — accepted, delivered, shown as an ordinary attachment |
+| `weekend-chart@gabriel-esparza.com` | `Content-ID: <weekend-chart@gabriel-esparza.com>` | **Rendered inline** in the body, and not also attached |
+
+That is two results in one. It is the defect of EC-30 — a bare id is not a
+msg-id, and Gmail silently declines to resolve it — and it is simultaneously
+the first confirmation from a real client that the assembled
+`multipart/related` renders at all, which is the thing this section exists to
+establish. The server now qualifies bare ids, so the failing row of that table
+is no longer reachable through the tool.
+
+| Client | Result | Date |
+| --- | --- | --- |
+| Gmail | **Renders inline**, not also attached | 2026-09-01 (field report; the surface was not recorded, so the mobile apps stay on the list below) |
+| Gmail iOS | not yet checked | — |
+| Gmail Android | not yet checked | — |
+| Apple Mail | not yet checked | — |
+| Outlook | not yet checked | — |
+
+**The acceptance criterion is now partially met.** The mechanism is proved in
+the client that reported the original defect; Apple Mail, Outlook, and Gmail's
+mobile apps remain open, and each must be checked with a *qualified* id, which
+is now the only kind the server can emit. Record the date and result in the
+table above as each one lands.
 
 ## 9. Budgets
 
@@ -271,3 +306,6 @@ Continuing the EC-N sequence of
 | EC-27 | **"Refuse before you read" cannot be total for `Raw.DataKey`.** The property PR3 of `email-composition.md` established — every free guardrail decided before an S3 read, so a throttled caller cannot drive bucket reads — holds for recipients, the recipient count, and the rate limit, but not for `sender_allow_list`: the `From` header it checks is *inside* the object being read | So that one decision moves after the fetch for this shape alone, and the comment at the first `blockedResult` says so rather than continuing to claim a property the code no longer has in full. The cost of the exception is bounded: an allow-listed recipient, under the rate limit, can cause one `HeadObject` plus one `GetObject` of an object already in the owner's own bucket. PR E |
 | EC-28 | **Splitting `RawEmail` makes the *absence* of `raw_base64` the honest report.** A `DataKey` message never was base64, so `RawEmailBytes` starts at `raw_size` and the ladder has three rungs instead of four — reporting `raw_base64: allowed` would claim a check that never ran, and skipping it silently would leave a caller wondering which rung was missing | The ladder is the caller's map of what was actually checked (PR A's reason for splitting it into stages in the first place), so a shorter ladder for a different input shape is the correct output, documented in the schema and in `docs/server.md`. The 100 %-per-function gate cost nothing here: both entry points reach the shared function. PR E |
 | EC-29 | **`Data` had to become `,omitempty` or a `DataKey`-only call never reaches the handler.** `jsonschema` marks a field without `omitempty` as `required`, so the SDK's *input* validation would refuse `Content.Raw: {"DataKey": …}` before the shape check could phrase a readable error | Exactly what happened to `RawContent` when `RawContentKey` arrived, one level up and one release later. The full-chain test is the one that proves it, because a handler-level test never sees the SDK's validating wrapper. PR E |
+| EC-30 | **A bare `Content-ID` is not a `Content-ID`.** RFC 2045 defines the field as a *msg-id*, whose grammar is `id-left "@" id-right` — the `@` is not optional. §4's normalisation rule (accept `chart` or `<chart>`, reference the bare form from the HTML) therefore emitted `Content-ID: <weekend-chart>`, which satisfies no grammar, and Gmail declines to resolve the `cid:`: the message is accepted, delivered, and the image arrives as an ordinary attachment. That is the exact symptom this plan was opened to fix, surviving one layer deeper than the container fix reached | `Assemble` qualifies a bare id to `id@<sender-domain>`, taken from the parsed `From`, in the header **and** rewrites every `cid:` reference to it in the HTML — RFC 2392 resolves a `cid:` URL against the whole Content-ID minus its brackets, so qualifying one and not the other just relocates the failure. An id that already carries an `@` is used exactly as given. The rewrite is bounded by the id charset, so `cid:chart` never rewrites inside `cid:chart2`. Nothing server-side could have caught this: the send succeeds, the digests match, and `mime_structure` reports a correct tree — the assembly was right and the identifier inside it was not, which is why §8's real-client criterion is the one that matters |
+| EC-31 | **Adding a `ServerMetadata` field broke callers holding the previous schema.** v1.2.0's `mime_structure` made the claude.ai connector reject a *successful* send with "must NOT have additional properties" — the connector caches tool schemas, the send had already happened, and client-side output validation discarded the entire response including the `MessageId`. The caller saw an error for a delivered message, and a well-behaved retry would have sent it a second time | `ServerMetadata` is now declared **open** to additional properties wherever it appears in an output schema (`files_create_upload_url` and `files_create_signed_url` gained explicit output schemas in the process, having had none at all). Every field that exists stays fully described; only the envelope is open. The standing rule follows: `ServerMetadata` changes are **additive-only**, because schema evolution is a compatibility contract and the party who pays for breaking it is a caller who cannot see that the schema changed. EC-8 and EC-29's family again — a validating wrapper decides what the caller actually receives — except that this time the wrapper was the *client's* |
+| EC-32 | **`DryRun` spends rate-limit budget.** The limiter is a guardrail and `DryRun` runs the guardrails, so the counter increments on a dry run exactly as on a send. Deliberate — a free dry run makes the per-tool limit probe-able rather than a budget — but nowhere documented, so a caller doing what R3 invites and diagnosing through repeated dry runs can exhaust the hour without sending anything | Documented, not changed: the three send tool descriptions, [PRD](../PRD.md) §8, and [`docs/server.md`](../server.md). Two neighbouring ambiguities from the same report were documented alongside it — `ReplyToAddresses` defaults to the server's *configured owner address* (a fixed setting, not anything derived from the message), and `WouldCall` echoes the complete AWS SDK input struct, so it shows fields the input schema deliberately rejects (`Template`, `Headers`, `Feedback*`, `ListManagementOptions`), which one caller read as the input schema lagging the API |

@@ -126,6 +126,17 @@ func outputSchemaFor[T any](tool string) *jsonschema.Schema {
 	if err != nil { // a type-shape error, not a runtime condition; AddTool panics on these too
 		panic(tool + " output schema: " + err.Error())
 	}
+	// ServerMetadata is the envelope that grows: content_digests in v1.1.0,
+	// mime_structure in v1.2.0, each one a "must NOT have additional
+	// properties" failure for every client that cached the schema before the
+	// deploy - and a failed response validation discards the payload, so a
+	// SUCCESSFUL send reads as an error and a well-behaved retrying caller
+	// double-sends. Schema evolution is a compatibility contract: additive
+	// fields must be tolerated, so the envelope is left open while every
+	// field that exists stays fully described.
+	if meta := schema.Properties["ServerMetadata"]; meta != nil {
+		meta.AdditionalProperties = nil
+	}
 	return schema
 }
 

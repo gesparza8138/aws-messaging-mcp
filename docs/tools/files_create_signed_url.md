@@ -47,7 +47,6 @@ Sign (or re-sign) a shared object into a CloudFront download link, optionally IP
       "type": "string"
     },
     "ServerMetadata": {
-      "additionalProperties": false,
       "properties": {
         "content_digests": {
           "items": {

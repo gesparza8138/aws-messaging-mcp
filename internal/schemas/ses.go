@@ -9,7 +9,7 @@ package schemas
 type SendEmailInput struct {
 	FromEmailAddress string        `json:"FromEmailAddress" jsonschema:"Sender address; must be in the server's allow-list"`
 	Destination      *Destination  `json:"Destination,omitempty" jsonschema:"Recipients of the message"`
-	ReplyToAddresses []string      `json:"ReplyToAddresses,omitempty" jsonschema:"Reply-To addresses; defaults to the owner's address"`
+	ReplyToAddresses []string      `json:"ReplyToAddresses,omitempty" jsonschema:"Reply-To addresses; defaults to the server's configured owner address (a fixed setting, not derived from the recipients)"`
 	Content          *EmailContent `json:"Content" jsonschema:"Exactly one of Simple or Raw"`
 	EmailTags        []MessageTag  `json:"EmailTags,omitempty" jsonschema:"Name/value pairs published with sending events"`
 	DryRun           bool          `json:"DryRun,omitempty" jsonschema:"Validate and run guardrails, return the would-be call without sending"`

@@ -377,7 +377,7 @@ func TestAttachByReference(t *testing.T) {
 	if !strings.Contains(string(message), "multipart/related") {
 		t.Errorf("no multipart/related container, so a cid: cannot resolve:\n%s", message)
 	}
-	if !strings.Contains(string(message), "Content-ID: <e2e-pixel>") {
+	if !strings.Contains(string(message), "Content-ID: <e2e-pixel@") {
 		t.Errorf("no Content-ID header for the HTML to reference:\n%s", message)
 	}
 	// The fetched bytes, base64 inside the message: the caller never sent them
@@ -396,7 +396,7 @@ func TestAttachByReference(t *testing.T) {
 		if part["content_type"] == "multipart/related" {
 			related, _ = part["path"].(string)
 		}
-		if part["content_id"] == "e2e-pixel" {
+		if strings.HasPrefix(fmt.Sprint(part["content_id"]), "e2e-pixel@") {
 			path, _ := part["path"].(string)
 			sibling = related != "" && strings.HasPrefix(path, related+".")
 		}

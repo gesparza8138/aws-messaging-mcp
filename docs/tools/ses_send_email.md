@@ -2,7 +2,7 @@
 
 # `ses_send_email`
 
-Send an email via Amazon SES (sesv2 SendEmail shape); requires msg/email:send. Supports DryRun. Inline (cid:) images work through Simple attachments: when an attachment is ContentDisposition INLINE, or carries a ContentId with no disposition at all, the server assembles a multipart/related message itself — the Html part and the image as siblings — and sends it as Content.Raw, so a cid:the-content-id reference in the Html body (the src of an img tag) renders the image in the body instead of the file arriving as an ordinary attachment. Give the ContentId with or without angle brackets ("chart" or "<chart>"); the HTML always references the bare form. A DryRun of such a send therefore echoes WouldCall.Content.Raw, not Content.Simple, because that is the exact call made. Sends with no inline attachment are unchanged: they go to SES as Content.Simple and SES assembles them. An attachment already in the files bucket is attached by key (RawContentKey from files_put_object or files_list_objects) instead of inline bytes, and a complete MIME message the same way (Content.Raw.DataKey instead of Content.Raw.Data, exactly one of the two) — which is how a message too large to emit as one base64 string is sent at all; both paths also require msg/read. Raw content and decoded attachments share a 10 MB budget by default, and SES caps the assembled message at 40 MB. Inspect the message before sending it with ServerMetadata.mime_structure: one flat entry per MIME part (path like 1.2.1, depth, content type, Content-ID, disposition, filename, encoded size) for the message the server assembled or the raw one it was given, so a DryRun shows whether the image really is a sibling of the Html part inside a multipart/related. Verify payload integrity with ServerMetadata.content_digests (SHA-256 and byte count per attachment, plus one for the assembled message, or for a caller-supplied raw message) rather than re-reading the echoed bytes.
+Send an email via Amazon SES (sesv2 SendEmail shape); requires msg/email:send. Supports DryRun (counts against the send rate limit, so probing draws real budget). Inline (cid:) images work through Simple attachments: when an attachment is ContentDisposition INLINE, or carries a ContentId with no disposition at all, the server assembles a multipart/related message itself — the Html part and the image as siblings — and sends it as Content.Raw, so a cid:the-content-id reference in the Html body (the src of an img tag) renders the image in the body instead of the file arriving as an ordinary attachment. Give the ContentId with or without angle brackets; a bare id ("chart") is qualified to chart@<sender-domain> in both the Content-ID header and the HTML's cid: references, because the header grammar requires the @ and Gmail silently degrades a bare id to an ordinary attachment. An id supplied with an @ is used exactly as given and the HTML must reference that full form. A DryRun of such a send therefore echoes WouldCall.Content.Raw, not Content.Simple, because that is the exact call made. Sends with no inline attachment are unchanged: they go to SES as Content.Simple and SES assembles them. An attachment already in the files bucket is attached by key (RawContentKey from files_put_object or files_list_objects) instead of inline bytes, and a complete MIME message the same way (Content.Raw.DataKey instead of Content.Raw.Data, exactly one of the two) — which is how a message too large to emit as one base64 string is sent at all; both paths also require msg/read. Raw content and decoded attachments share a 10 MB budget by default, and SES caps the assembled message at 40 MB. Inspect the message before sending it with ServerMetadata.mime_structure: one flat entry per MIME part (path like 1.2.1, depth, content type, Content-ID, disposition, filename, encoded size) for the message the server assembled or the raw one it was given, so a DryRun shows whether the image really is a sibling of the Html part inside a multipart/related. Verify payload integrity with ServerMetadata.content_digests (SHA-256 and byte count per attachment, plus one for the assembled message, or for a caller-supplied raw message) rather than re-reading the echoed bytes.
 
 ## Input schema
 
@@ -229,7 +229,7 @@ Send an email via Amazon SES (sesv2 SendEmail shape); requires msg/email:send. S
       "type": "string"
     },
     "ReplyToAddresses": {
-      "description": "Reply-To addresses; defaults to the owner's address",
+      "description": "Reply-To addresses; defaults to the server's configured owner address (a fixed setting, not derived from the recipients)",
       "items": {
         "type": "string"
       },
@@ -257,7 +257,6 @@ Send an email via Amazon SES (sesv2 SendEmail shape); requires msg/email:send. S
       "type": "string"
     },
     "ServerMetadata": {
-      "additionalProperties": false,
       "properties": {
         "content_digests": {
           "items": {

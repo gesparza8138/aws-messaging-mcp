@@ -679,17 +679,17 @@ func TestSendEmailInlineAttachmentIsAssembled(t *testing.T) {
 	if html.ContentType != "text/html" {
 		t.Fatalf("the related group's root part must be the HTML: %+v", html)
 	}
-	if image.ContentType != "image/png" || image.ContentID != "logo" || image.Disposition != "inline" {
+	if image.ContentType != "image/png" || image.ContentID != "logo@example.com" || image.Disposition != "inline" {
 		t.Fatalf("the image must be the HTML's sibling, inline, with the cid: %+v", image)
 	}
 	// The header a client matches a cid: against, spelled the way every other
 	// mailer spells it.
-	if !strings.Contains(string(msg), "Content-ID: <logo>") {
+	if !strings.Contains(string(msg), "Content-ID: <logo@example.com>") {
 		t.Fatalf("Content-ID header missing:\n%s", msg)
 	}
 	// The HTML body travels quoted-printable, which is what keeps a long line
 	// under RFC 5321's limit, so its "=" arrives as "=3D".
-	if !strings.Contains(string(msg), `<img src=3D"cid:logo">`) {
+	if !strings.Contains(string(msg), `<img src=3D"cid:logo@example.com">`) {
 		t.Fatalf("the HTML body must survive into the message:\n%s", msg)
 	}
 
@@ -897,6 +897,33 @@ func TestSendEmailOutputSchemaStaysInferable(t *testing.T) {
 // SendTextMessageInput.DestinationCountryParameters, unnoticed until an e2e
 // helper stopped panicking over it. Every tool with a WouldCall now declares
 // its schema, and this asserts the correction survives.
+// Every tool carrying ServerMetadata must declare it open to additional
+// properties: the envelope gained content_digests in v1.1.0 and
+// mime_structure in v1.2.0, and each addition made clients holding a cached
+// pre-deploy schema reject SUCCESSFUL responses as "must NOT have additional
+// properties" - discarding the MessageId and inviting a duplicate send from
+// any retrying caller. Schema evolution is a compatibility contract.
+func TestServerMetadataToleratesAdditions(t *testing.T) {
+	for name, schema := range map[string]*jsonschema.Schema{
+		"ses_send_email":          sendEmailOutputSchema(),
+		"sms_send_text_message":   outputSchemaFor[SendTextOutput]("t"),
+		"sms_send_media_message":  outputSchemaFor[SendMediaOutput]("t"),
+		"files_put_object":        outputSchemaFor[PutObjectOutput]("t"),
+		"files_create_upload_url": outputSchemaFor[UploadURLOutput]("t"),
+		"files_create_signed_url": outputSchemaFor[SignedURLOutput]("t"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			meta := schema.Properties["ServerMetadata"]
+			if meta == nil {
+				t.Fatal("no ServerMetadata in the declared schema")
+			}
+			if meta.AdditionalProperties != nil {
+				t.Fatalf("ServerMetadata must tolerate additional properties, got %+v", meta.AdditionalProperties)
+			}
+		})
+	}
+}
+
 func TestWouldCallSchemasAcceptZeroValues(t *testing.T) {
 	for _, tc := range []struct {
 		tool   string
@@ -949,7 +976,7 @@ func TestSendEmailInlineReportsMimeStructure(t *testing.T) {
 		}
 	}
 	image := byPath["1.2.2"]
-	if image.ContentID != "logo" || image.Disposition != "inline" || image.FileName != "logo.png" || image.Depth != 2 {
+	if image.ContentID != "logo@example.com" || image.Disposition != "inline" || image.FileName != "logo.png" || image.Depth != 2 {
 		t.Fatalf("the inline part must carry its cid, disposition, filename, and depth: %+v", image)
 	}
 	if image.Bytes == 0 {

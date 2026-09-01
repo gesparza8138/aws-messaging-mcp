@@ -46,12 +46,16 @@ Presigned PUT URL for large files (≤500 MB, 15-minute validity); sign afterwar
     },
     "RequiredHeaders": {
       "additionalProperties": {
-        "type": "string"
+        "type": [
+          "string"
+        ]
       },
-      "type": "object"
+      "type": [
+        "null",
+        "object"
+      ]
     },
     "ServerMetadata": {
-      "additionalProperties": false,
       "properties": {
         "content_digests": {
           "items": {
