@@ -367,9 +367,14 @@ Upload an inline file (≤4 MB) and get back a CloudFront-signed download link; 
         },
         "Metadata": {
           "additionalProperties": {
-            "type": "string"
+            "type": [
+              "string"
+            ]
           },
-          "type": "object"
+          "type": [
+            "null",
+            "object"
+          ]
         },
         "ObjectLockLegalHoldStatus": {
           "type": "string"

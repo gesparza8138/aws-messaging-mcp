@@ -214,9 +214,14 @@ Send an MMS with images via AWS End User Messaging (SendMediaMessage shape); req
         },
         "Context": {
           "additionalProperties": {
-            "type": "string"
+            "type": [
+              "string"
+            ]
           },
-          "type": "object"
+          "type": [
+            "null",
+            "object"
+          ]
         },
         "DestinationPhoneNumber": {
           "type": [

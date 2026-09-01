@@ -179,15 +179,25 @@ Send an SMS via AWS End User Messaging (SendTextMessage shape); requires msg/sms
         },
         "Context": {
           "additionalProperties": {
-            "type": "string"
+            "type": [
+              "string"
+            ]
           },
-          "type": "object"
+          "type": [
+            "null",
+            "object"
+          ]
         },
         "DestinationCountryParameters": {
           "additionalProperties": {
-            "type": "string"
+            "type": [
+              "string"
+            ]
           },
-          "type": "object"
+          "type": [
+            "null",
+            "object"
+          ]
         },
         "DestinationPhoneNumber": {
           "type": [
