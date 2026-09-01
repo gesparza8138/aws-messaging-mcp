@@ -64,7 +64,7 @@ func NewHandler(cfg Config) http.Handler {
 	// page and the SMS opt-in disclosure that the toll-free verification form
 	// references (PRD M3-5).
 	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, _ *http.Request) {
-		writeHTML(w, indexPage())
+		writeHTML(w, indexPage(cfg.Settings.SESReplyTo, cfg.Settings.OptInPhoneNumber))
 	})
 	mux.HandleFunc("GET /opt-in", func(w http.ResponseWriter, _ *http.Request) {
 		writeHTML(w, optInPage(cfg.Settings.OptInPhoneNumber))
@@ -78,14 +78,33 @@ func writeHTML(w http.ResponseWriter, body string) {
 	_, _ = w.Write([]byte(body))
 }
 
-func indexPage() string {
+// indexPage is the public landing page. It carries the contact details the
+// toll-free verification reviewers cross-check against the registration, so
+// the support email and the sending number come from the same settings the
+// server actually uses rather than being restated here (the first denial was
+// "Company Verification Failed" - see docs/plans/pending.md). Both degrade
+// gracefully when unset, as the opt-in page does.
+func indexPage(supportEmail, phoneNumber string) string {
+	contact := ""
+	if supportEmail != "" {
+		contact += `<p>Support: <a href="mailto:` + supportEmail + `">` + supportEmail + `</a></p>
+`
+	}
+	if phoneNumber != "" {
+		// Named as the sending number, not a support line: the toll-free is
+		// SMS/MMS only, so promising voice on it would be untrue.
+		contact += `<p>Text messages are sent from ` + phoneNumber + ` (SMS and MMS only;
+this number does not accept voice calls). Reply <strong>STOP</strong> to opt out.</p>
+`
+	}
 	return `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Gabriel Esparza — personal messaging service</title></head><body>
 <h1>Personal messaging service</h1>
 <p>This is a private, single-owner notification service operated by Gabriel Esparza.
 It sends one-off transactional email and text messages on the owner's behalf —
 reminders, confirmations, and links to documents the recipient asked for.
 There is no marketing, no recurring campaigns, and no public sign-up.</p>
-<p><a href="/opt-in">SMS opt-in and opt-out details</a></p>
+<h2>Contact</h2>
+` + contact + `<p><a href="/opt-in">SMS opt-in and opt-out details</a></p>
 </body></html>`
 }
 
