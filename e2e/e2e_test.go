@@ -14,6 +14,9 @@ package e2e
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -266,6 +269,109 @@ func TestTools(t *testing.T) {
 	}
 	t.Logf("sent %s", messageID)
 	e.awaitDelivery(ctx, t, messageID)
+}
+
+// TestAttachByReference: an object already in the files bucket becomes an
+// inline (cid:) email attachment by key — no bytes through the model — and
+// the dry run proves the server fetched exactly those bytes.
+func TestAttachByReference(t *testing.T) {
+	e := load(t)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	session := e.session(ctx, t)
+
+	tools, err := session.ListTools(ctx, nil)
+	if err != nil {
+		t.Fatalf("tools/list: %v", err)
+	}
+	files := false
+	for _, tool := range tools.Tools {
+		files = files || tool.Name == "files_put_object"
+	}
+	if !files {
+		t.Skip("files tools not registered on this stage")
+	}
+
+	png := []byte("\x89PNG\r\n\x1a\n e2e attach-by-reference pixel")
+	put, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "files_put_object", Arguments: map[string]any{
+		"FileName": "e2e-inline.png", "ContentType": "image/png",
+		"ContentEncoding": "base64", "Body": base64.StdEncoding.EncodeToString(png),
+		"ExpiresIn": "P1D",
+	}})
+	if err != nil {
+		t.Fatalf("files_put_object: %v", err)
+	}
+	if put.IsError {
+		t.Fatalf("files_put_object refused: %s", text(put))
+	}
+	key, _ := structured(t, put)["Key"].(string)
+	if key == "" {
+		t.Fatalf("no key in the upload result: %v", structured(t, put))
+	}
+	t.Cleanup(func() {
+		if _, err := session.CallTool(context.Background(), &mcp.CallToolParams{
+			Name: "files_delete_object", Arguments: map[string]any{"Key": key}}); err != nil {
+			t.Logf("cleanup of %s failed: %v", key, err)
+		}
+	})
+
+	dry, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "ses_send_email", Arguments: map[string]any{
+		"DryRun":           true,
+		"FromEmailAddress": e.sender,
+		"Destination":      map[string]any{"ToAddresses": []string{e.recipient}},
+		"Content": map[string]any{"Simple": map[string]any{
+			"Subject": map[string]any{"Data": "e2e attach by reference"},
+			"Body":    map[string]any{"Html": map[string]any{"Data": `<p><img src="cid:e2e-pixel"></p>`}},
+			"Attachments": []map[string]any{{
+				"FileName": "e2e-inline.png", "ContentType": "image/png",
+				"RawContentKey": key, "ContentDisposition": "INLINE", "ContentId": "e2e-pixel",
+			}},
+		}},
+	}})
+	if err != nil {
+		t.Fatalf("ses_send_email: %v", err)
+	}
+	if dry.IsError {
+		t.Fatalf("attach by reference refused: %s", text(dry))
+	}
+	out := structured(t, dry)
+
+	// WouldCall echoes the SDK input, so RawContent is the fetched bytes as
+	// base64 — the caller never sent them.
+	attachments, _ := dig(out, "WouldCall", "Content", "Simple")["Attachments"].([]any)
+	if len(attachments) != 1 {
+		t.Fatalf("would-call attachments: %v", out["WouldCall"])
+	}
+	encoded, _ := attachments[0].(map[string]any)["RawContent"].(string)
+	got, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil || len(got) == 0 {
+		t.Fatalf("attachment bytes %q: %v", encoded, err)
+	}
+	if string(got) != string(png) {
+		t.Errorf("server attached %q, want the uploaded object", got)
+	}
+
+	digests, _ := dig(out, "ServerMetadata")["content_digests"].([]any)
+	if len(digests) != 1 {
+		t.Fatalf("content_digests: %v", out["ServerMetadata"])
+	}
+	want := sha256.Sum256(png)
+	if digest := digests[0].(map[string]any); digest["sha256"] != hex.EncodeToString(want[:]) {
+		t.Errorf("digest %v does not match the uploaded object", digest)
+	}
+}
+
+// dig walks nested JSON objects, returning an empty map at the first miss so
+// the caller's own assertion reports the failure.
+func dig(m map[string]any, path ...string) map[string]any {
+	for _, key := range path {
+		next, ok := m[key].(map[string]any)
+		if !ok {
+			return map[string]any{}
+		}
+		m = next
+	}
+	return m
 }
 
 // awaitDelivery polls the SES event trail for the message's Delivery event.

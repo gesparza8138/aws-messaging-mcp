@@ -6,12 +6,14 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/aws/aws-sdk-go-v2/service/sesv2"
 	sestypes "github.com/aws/aws-sdk-go-v2/service/sesv2/types"
 	"github.com/aws/smithy-go"
@@ -391,6 +393,204 @@ func TestBuildSendEmailCharsetsAndAttachments(t *testing.T) {
 	}
 	if call.ConfigurationSetName != nil || call.ReplyToAddresses != nil {
 		t.Fatalf("empty injections must stay unset: %+v", call)
+	}
+}
+
+// refFake is a files store holding one live shared object of the given bytes.
+func refFake(body []byte) *fakeFiles {
+	return &fakeFiles{
+		headMeta: map[string]string{expiresAtMetaKey: time.Now().Add(time.Hour).UTC().Format(time.RFC3339)},
+		headSize: int64(len(body)),
+		getBody:  body,
+	}
+}
+
+// refDeps is testDeps plus the files store ses_send_email reads references
+// from; a nil store is the stage where the files tools never registered.
+func refDeps(ses *fakeSES, files *fakeFiles) Deps {
+	d := testDeps(ses)
+	d.Settings.FilesBucket = "files-bucket"
+	if files != nil {
+		d.Files = files
+	}
+	return d
+}
+
+func reference(dryRun bool, key string) schemas.SendEmailInput {
+	return attached(dryRun, schemas.Attachment{FileName: "logo.png", ContentType: "image/png", RawContentKey: key})
+}
+
+func TestSendEmailAttachByReference(t *testing.T) {
+	png := []byte("\x89PNG already in the files bucket")
+	ses, files := &fakeSES{}, refFake(png)
+	_, out, _ := refDeps(ses, files).sendEmail()(authedCtx("msg/email:send", "msg/read"), nil,
+		reference(false, "shared/abc/logo.png"))
+	if out.MessageID != "msg-123" || ses.sendIn == nil {
+		t.Fatalf("send failed: %+v", out)
+	}
+	if got := aws.ToString(files.getIn.Key); got != "files/shared/abc/logo.png" {
+		t.Fatalf("bucket key must carry the files/ prefix: %q", got)
+	}
+	if got := ses.sendIn.Content.Simple.Attachments[0].RawContent; string(got) != string(png) {
+		t.Fatalf("fetched bytes must reach SES: %q", got)
+	}
+	want := []ContentDigest{{Part: "attachment[0]:logo.png", Bytes: len(png), SHA256: sha256Hex(png)}}
+	if !reflect.DeepEqual(out.ServerMetadata.ContentDigests, want) {
+		t.Fatalf("digests: %+v want %+v", out.ServerMetadata.ContentDigests, want)
+	}
+	var sized bool
+	for _, d := range out.ServerMetadata.Guardrails {
+		sized = sized || (d.Name == "attachment_size" && d.Allowed && strings.Contains(d.Reason, fmt.Sprint(len(png))))
+	}
+	if !sized {
+		t.Fatalf("fetched bytes must be counted by attachment_size: %+v", out.ServerMetadata.Guardrails)
+	}
+}
+
+// A refusal that is free to decide must be decided before a referenced
+// attachment costs an S3 read, or a throttled caller could keep reading the
+// files bucket through ses_send_email.
+func TestSendEmailBlockedBeforeFetchingReferences(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		mutit func(*Deps, *schemas.SendEmailInput)
+		want  string
+	}{
+		{"rate limit", func(d *Deps, _ *schemas.SendEmailInput) {
+			d.Limiter = &guardrails.Limiter{Store: blockedStore{}, PerHour: 1, PerDay: 1}
+		}, "rate_limit"},
+		{"recipient", func(_ *Deps, in *schemas.SendEmailInput) {
+			in.Destination.ToAddresses = []string{"stranger@example.com"}
+		}, "recipient_allow_list"},
+		{"sender", func(_ *Deps, in *schemas.SendEmailInput) {
+			in.FromEmailAddress = "spoofed@example.com"
+		}, "sender_allow_list"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ses, files := &fakeSES{}, refFake([]byte("never read"))
+			d := refDeps(ses, files)
+			in := reference(false, "shared/abc/logo.png")
+			tc.mutit(&d, &in)
+			res, _, _ := d.sendEmail()(authedCtx("msg/email:send", "msg/read"), nil, in)
+			if res == nil || !res.IsError || !strings.Contains(res.Content[0].(*mcp.TextContent).Text, tc.want) {
+				t.Fatalf("want %s block, got %+v", tc.want, res)
+			}
+			if files.headCalls != 0 || files.getCalls != 0 {
+				t.Fatalf("blocked send must not touch S3: heads=%d gets=%d", files.headCalls, files.getCalls)
+			}
+			if ses.sendIn != nil {
+				t.Fatal("blocked send must not reach SES")
+			}
+		})
+	}
+}
+
+func TestSendEmailAttachByReferenceDryRun(t *testing.T) {
+	pdf := []byte("%PDF-1.7 from the files bucket")
+	ses, files := &fakeSES{}, refFake(pdf)
+	_, out, _ := refDeps(ses, files).sendEmail()(authedCtx("msg/email:send", "msg/read"), nil,
+		reference(true, "shared/abc/report.pdf"))
+	if ses.sendIn != nil {
+		t.Fatal("DryRun must not call SES")
+	}
+	if files.getCalls != 1 {
+		t.Fatalf("DryRun must still fetch the object: %d GetObject calls", files.getCalls)
+	}
+	if out.WouldCall == nil || string(out.WouldCall.Content.Simple.Attachments[0].RawContent) != string(pdf) {
+		t.Fatalf("would-call must carry the resolved bytes: %+v", out.WouldCall)
+	}
+	want := []ContentDigest{{Part: "attachment[0]:logo.png", Bytes: len(pdf), SHA256: sha256Hex(pdf)}}
+	if !reflect.DeepEqual(out.ServerMetadata.ContentDigests, want) {
+		t.Fatalf("digests: %+v want %+v", out.ServerMetadata.ContentDigests, want)
+	}
+}
+
+// Referenced and inline attachments spend one budget: 600 + 600 fetched bytes
+// exceed the 1024-byte test ceiling.
+func TestSendEmailReferencedBytesShareTheAttachmentBudget(t *testing.T) {
+	ses := &fakeSES{}
+	in := attached(false, attachment("inline.bin", make([]byte, 600)),
+		schemas.Attachment{FileName: "ref.bin", RawContentKey: "shared/abc/ref.bin"})
+	res, _, _ := refDeps(ses, refFake(make([]byte, 600))).sendEmail()(authedCtx("msg/email:send", "msg/read"), nil, in)
+	if res == nil || !res.IsError {
+		t.Fatalf("combined size must block: %+v", res)
+	}
+	if text := res.Content[0].(*mcp.TextContent).Text; !strings.Contains(text, "attachment_size") {
+		t.Fatalf("error text: %q", text)
+	}
+	if ses.sendIn != nil {
+		t.Fatal("blocked call must not reach SES")
+	}
+}
+
+func TestSendEmailAttachByReferenceRefusals(t *testing.T) {
+	both := attached(false, schemas.Attachment{FileName: "a.bin", RawContent: "aGk=", RawContentKey: "shared/abc/a.bin"})
+	neither := attached(false, schemas.Attachment{FileName: "a.bin"})
+	expired := refFake([]byte("bytes"))
+	expired.headMeta = map[string]string{expiresAtMetaKey: time.Now().Add(-time.Hour).UTC().Format(time.RFC3339)}
+	oversize := refFake([]byte("bytes"))
+	oversize.headSize = 2048 // EmailMaxRawBytes is 1024 in these tests
+	gone := refFake(nil)
+	gone.headErr = &s3types.NotFound{}
+	headFailed := refFake(nil)
+	headFailed.headErr = &apiError{code: "AccessDenied", msg: "no bucket read"}
+	raced := refFake(nil)
+	raced.getErr = &s3types.NoSuchKey{}
+	getFailed := refFake(nil)
+	getFailed.getErr = &apiError{code: "SlowDown", msg: "please retry"}
+	torn := refFake(nil)
+	torn.getReadErr = errors.New("connection reset")
+
+	cases := []struct {
+		name    string
+		files   *fakeFiles
+		scopes  []string
+		in      schemas.SendEmailInput
+		want    string
+		wantGet int
+	}{
+		{"both content and key", refFake(nil), []string{"msg/email:send", "msg/read"}, both,
+			"attachment 0 must set exactly one of RawContent or RawContentKey", 0},
+		{"neither content nor key", refFake(nil), []string{"msg/email:send", "msg/read"}, neither,
+			"attachment 0 must set exactly one of RawContent or RawContentKey", 0},
+		{"key outside shared/", refFake(nil), []string{"msg/email:send", "msg/read"},
+			reference(false, "files/shared/abc/a.bin"), "attachment 0: Key must be under shared/", 0},
+		{"no files store on this stage", nil, []string{"msg/email:send", "msg/read"},
+			reference(false, "shared/abc/a.bin"), "not configured", 0},
+		{"email scope alone cannot read the bucket", refFake([]byte("bytes")), []string{"msg/email:send"},
+			reference(false, "shared/abc/a.bin"), "msg/read", 0},
+		{"object not found", gone, []string{"msg/email:send", "msg/read"},
+			reference(false, "shared/abc/a.bin"), "no object shared/abc/a.bin", 0},
+		{"head fails for another reason", headFailed, []string{"msg/email:send", "msg/read"},
+			reference(false, "shared/abc/a.bin"), "AccessDenied", 0},
+		{"object past its expiry", expired, []string{"msg/email:send", "msg/read"},
+			reference(false, "shared/abc/a.bin"), "awaiting cleanup", 0},
+		{"object over the budget", oversize, []string{"msg/email:send", "msg/read"},
+			reference(false, "shared/abc/a.bin"), "2048 bytes, over the 1024-byte attachment budget", 0},
+		{"deleted between head and get", raced, []string{"msg/email:send", "msg/read"},
+			reference(false, "shared/abc/a.bin"), "disappeared between the size check and the read", 1},
+		{"get fails for another reason", getFailed, []string{"msg/email:send", "msg/read"},
+			reference(false, "shared/abc/a.bin"), "SlowDown", 1},
+		{"body dies mid-read", torn, []string{"msg/email:send", "msg/read"},
+			reference(false, "shared/abc/a.bin"), "connection reset", 1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ses := &fakeSES{}
+			res, _, _ := refDeps(ses, tc.files).sendEmail()(authedCtx(tc.scopes...), nil, tc.in)
+			if res == nil || !res.IsError {
+				t.Fatalf("expected a refusal, got %+v", res)
+			}
+			if text := res.Content[0].(*mcp.TextContent).Text; !strings.Contains(text, tc.want) {
+				t.Fatalf("error text %q lacks %q", text, tc.want)
+			}
+			if ses.sendIn != nil {
+				t.Fatal("refused call must not reach SES")
+			}
+			if tc.files != nil && tc.files.getCalls != tc.wantGet {
+				t.Fatalf("GetObject calls: %d want %d", tc.files.getCalls, tc.wantGet)
+			}
+		})
 	}
 }
 
