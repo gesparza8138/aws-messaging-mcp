@@ -69,22 +69,34 @@ Resources:
       Name: !Sub "${AWS::StackName}-redirect"
       AutoPublish: true
       FunctionConfig:
-        Comment: !Sub "301 every request to ${RedirectLocation}"
+        Comment: !Sub "Serve /privacy, /terms, /opt-in at the edge; 301 everything else to ${RedirectLocation}"
         Runtime: cloudfront-js-2.0
       # Plain string concatenation only, like IpAllowListFunction: template
       # literals would collide with the !Sub substitution syntax.
       FunctionCode: !Sub |
-        function handler(event) {
+        var PRIVACY = '<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Privacy Policy - Gabriel Esparza</title></head><body><h1>Privacy Policy</h1><p>Effective 2026-09-13. This personal notification service is operated by Gabriel Esparza ("we").</p><h2>What we collect</h2><p>Names, email addresses, and mobile phone numbers of people who ask to receive a message, provided by them directly.</p><h2>How it is used</h2><p>Only to send the specific messages you requested (reminders, confirmations, document links). <strong>Mobile phone numbers and opt-in information are not shared with, sold to, or transferred to any third party for marketing or any other purpose.</strong> Message delivery is processed by our SMS carrier partners solely to transmit your messages.</p><h2>Messaging disclosures</h2><p>Message frequency varies with your requests; there are no recurring campaigns. <strong>Message and data rates may apply.</strong> Reply <strong>STOP</strong> to opt out at any time or <strong>HELP</strong> for help.</p><h2>Contact</h2><p>esparza.gabriel@gmail.com. See also our <a href="/terms">Terms</a> and <a href="${RedirectLocation}opt-in">SMS opt-in disclosure</a>.</p></body></html>';
+        var TERMS = '<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Terms and Conditions - Gabriel Esparza</title></head><body><h1>SMS Terms and Conditions</h1><p>Effective 2026-09-13. This is a personal notification service operated by Gabriel Esparza.</p><ol><li>By asking Gabriel Esparza (in person, by phone, or in writing) to send you information by text, you consent to receive one-time transactional messages: reminders, confirmations, and links to documents you requested.</li><li>Message frequency varies with your requests. No marketing or recurring campaigns are sent.</li><li><strong>Message and data rates may apply</strong> according to your mobile plan.</li><li>Reply <strong>STOP</strong> to cancel at any time; you will receive one final confirmation message. Reply <strong>HELP</strong> for help, or contact esparza.gabriel@gmail.com.</li><li>Carriers are not liable for delayed or undelivered messages.</li></ol><p>See our <a href="/privacy">Privacy Policy</a>.</p></body></html>';
+        var OPTIN = '<!doctype html><html lang="en"><head><meta charset="utf-8"><title>SMS Opt-In Consent - Gabriel Esparza</title></head><body><h1>SMS Opt-In Consent</h1><p>Messages from Gabriel Esparza are sent only to people who explicitly asked for them. No one is ever texted first, and there is no keyword or shortcode sign-up.</p><h2>How consent is collected</h2><p>You opt in verbally or in writing: you ask Gabriel Esparza — in person, by phone, or in writing — to send you specific information by text, and you provide your mobile number. In doing so <strong>you expressly agree to receive text messages from Gabriel Esparza at the number you provided.</strong> Your consent is recorded before any message is sent.</p><h2>Disclosures</h2><p>Message frequency varies with your requests; there are no recurring or marketing messages. <strong>Message and data rates may apply.</strong> Reply <strong>STOP</strong> to opt out at any time or <strong>HELP</strong> for help. Consent is not a condition of any purchase.</p><p><a href="/privacy">Privacy Policy</a> · <a href="/terms">Terms</a> · esparza.gabriel@gmail.com</p></body></html>';
+        function page(body) {
           return {
-            statusCode: 301,
-            statusDescription: 'Moved Permanently',
+            statusCode: 200, statusDescription: 'OK',
+            headers: { 'content-type': { value: 'text/html; charset=utf-8' }, 'cache-control': { value: 'public, max-age=300' } },
+            body: body
+          };
+        }
+        function handler(event) {
+          var uri = event.request.uri;
+          if (uri === '/privacy' || uri === '/privacy/') return page(PRIVACY);
+          if (uri === '/terms' || uri === '/terms/') return page(TERMS);
+          if (uri === '/opt-in' || uri === '/opt-in/') return page(OPTIN);
+          return {
+            statusCode: 301, statusDescription: 'Moved Permanently',
             headers: {
               'location': { value: '${RedirectLocation}' },
               'cache-control': { value: 'public, max-age=3600' }
             }
           };
         }
-
   Distribution:
     Type: AWS::CloudFront::Distribution
     Metadata:
