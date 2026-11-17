@@ -131,6 +131,48 @@ func TestSendEmailRealSend(t *testing.T) {
 	}
 }
 
+// TestSendEmailDisplayName is the "who is this from" label: a display name on an
+// allowed address passes the guardrail and reaches SES, with a non-ASCII name
+// rewritten as the RFC 2047 encoded words SES requires and a bare address left
+// exactly as given.
+func TestSendEmailDisplayName(t *testing.T) {
+	cases := []struct{ from, want string }{
+		{"mcp-dev@example.com", "mcp-dev@example.com"},
+		{`"Daily Report from Claude" <mcp-dev@example.com>`, `"Daily Report from Claude" <mcp-dev@example.com>`},
+		{`Daily Report <mcp-dev@example.com>`, `"Daily Report" <mcp-dev@example.com>`},
+		{`"Café Digest" <mcp-dev@example.com>`, `=?utf-8?q?Caf=C3=A9_Digest?= <mcp-dev@example.com>`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.from, func(t *testing.T) {
+			ses := &fakeSES{}
+			in := simpleInput(false)
+			in.FromEmailAddress = tc.from
+			res, out, _ := testDeps(ses).sendEmail()(authedCtx("msg/email:send"), nil, in)
+			if res != nil || out.MessageID != "msg-123" {
+				t.Fatalf("send refused: res=%+v out=%+v", res, out)
+			}
+			if got := aws.ToString(ses.sendIn.FromEmailAddress); got != tc.want {
+				t.Fatalf("FromEmailAddress = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestSendEmailAssembledKeepsDisplayName checks the inline path, where the name
+// has to survive into the From header of the message the server builds.
+func TestSendEmailAssembledKeepsDisplayName(t *testing.T) {
+	ses := &fakeSES{}
+	in := inlineInput(false)
+	in.FromEmailAddress = `"Daily Report from Claude" <mcp-dev@example.com>`
+	if res, _, _ := testDeps(ses).sendEmail()(authedCtx("msg/email:send"), nil, in); res != nil {
+		t.Fatalf("send refused: %+v", res)
+	}
+	msg := assembledFrom(t, ses.sendIn)
+	if !strings.Contains(string(msg), "From: \"Daily Report from Claude\" <mcp-dev@example.com>\r\n") {
+		t.Fatalf("display name lost from the assembled From header:\n%s", msg)
+	}
+}
+
 func TestSendEmailGuardrailBlocks(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -138,6 +180,10 @@ func TestSendEmailGuardrailBlocks(t *testing.T) {
 		reason string
 	}{
 		{"bad sender", func(in *schemas.SendEmailInput) { in.FromEmailAddress = "evil@x.com" }, "sender_allow_list"},
+		{"named bad sender", func(in *schemas.SendEmailInput) { in.FromEmailAddress = `"Daily Report" <evil@x.com>` }, "sender_allow_list"},
+		{"@ in the display name", func(in *schemas.SendEmailInput) {
+			in.FromEmailAddress = `"ceo@bank.example" <mcp-dev@example.com>`
+		}, "sender_allow_list"},
 		{"bad recipient", func(in *schemas.SendEmailInput) { in.Destination.ToAddresses = []string{"stranger@x.com"} }, "recipient_allow_list"},
 		{"too many recipients", func(in *schemas.SendEmailInput) {
 			in.Destination.ToAddresses = []string{"owner@example.com", "owner@example.com", "owner@example.com"}
