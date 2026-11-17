@@ -17,7 +17,7 @@ import (
 )
 
 // Version is stamped into the MCP server implementation info.
-const Version = "1.2.1"
+const Version = "1.3.0"
 
 // Deps wires the tools to their backends. A nil SES (or EUM) leaves that
 // tool family unregistered (tests that only exercise the auth chain use this).
