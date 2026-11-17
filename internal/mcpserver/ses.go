@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/mail"
 	"reflect"
 	"strings"
 	"time"
@@ -606,6 +607,20 @@ func replyToAddresses(in schemas.SendEmailInput, defaultReplyTo string) []string
 	}
 }
 
+// sesSender is the FromEmailAddress SES is given. A sender with a display name
+// is re-emitted by net/mail, which quotes the name where RFC 5322 needs it and
+// writes a non-ASCII one as RFC 2047 encoded words - the only form SES accepts
+// for a "friendly from" outside ASCII. A bare address, or one that does not
+// parse (the guardrail has already refused that unless the path never checked
+// it), is passed through unchanged.
+func sesSender(from string) string {
+	addr, err := mail.ParseAddress(strings.TrimSpace(from))
+	if err != nil || addr.Name == "" {
+		return from
+	}
+	return addr.String()
+}
+
 // sendEmailParams is what buildSendEmail maps onto the SDK input. A struct
 // rather than a parameter list because the list reached seven with the
 // assembled path, four of them interchangeable []byte and string.
@@ -623,7 +638,7 @@ type sendEmailParams struct {
 func buildSendEmail(p sendEmailParams) *sesv2.SendEmailInput {
 	in := p.in
 	call := &sesv2.SendEmailInput{
-		FromEmailAddress: aws.String(in.FromEmailAddress),
+		FromEmailAddress: aws.String(sesSender(in.FromEmailAddress)),
 		Content:          &sestypes.EmailContent{},
 	}
 	// The configuration set, the destination (BccAddresses included), and the

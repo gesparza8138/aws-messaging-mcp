@@ -7,7 +7,7 @@ package schemas
 
 // SendEmailInput mirrors sesv2 SendEmail (the subset callers control).
 type SendEmailInput struct {
-	FromEmailAddress string        `json:"FromEmailAddress" jsonschema:"Sender address; must be in the server's allow-list"`
+	FromEmailAddress string        `json:"FromEmailAddress" jsonschema:"Sender mailbox. The address must be in the server's allow-list; an optional display name labels the email for its recipient and should say what it is, e.g. \"Daily Report from Claude\" <address> (no @ in the name, at most 64 characters)"`
 	Destination      *Destination  `json:"Destination,omitempty" jsonschema:"Recipients of the message"`
 	ReplyToAddresses []string      `json:"ReplyToAddresses,omitempty" jsonschema:"Reply-To addresses; defaults to the server's configured owner address (a fixed setting, not derived from the recipients)"`
 	Content          *EmailContent `json:"Content" jsonschema:"Exactly one of Simple or Raw"`

@@ -48,5 +48,5 @@ func RawEmailBytes(decoded []byte, maxBytes int, allow []string) []Decision {
 		return append(decisions, Decision{Name: "sender_allow_list", Allowed: false,
 			Reason: "cannot parse the From header"})
 	}
-	return append(decisions, SenderAllowed(addr.Address, allow))
+	return append(decisions, senderDecision(addr, allow))
 }

@@ -227,10 +227,13 @@ func TestTools(t *testing.T) {
 	}
 
 	stamp := time.Now().UTC().Format(time.RFC3339)
+	// A display name on the sender, so every run proves the IAM condition on
+	// ses:FromAddress still matches a named mailbox, not only a bare address.
+	from := fmt.Sprintf("%q <%s>", "aws-messaging-mcp e2e", e.sender)
 	message := func(to, subject string, dryRun bool) map[string]any {
 		return map[string]any{
 			"DryRun":           dryRun,
-			"FromEmailAddress": e.sender,
+			"FromEmailAddress": from,
 			"Destination":      map[string]any{"ToAddresses": []string{to}},
 			"Content": map[string]any{"Simple": map[string]any{
 				"Subject": map[string]any{"Data": subject},
@@ -251,6 +254,9 @@ func TestTools(t *testing.T) {
 	would, _ := out["WouldCall"].(map[string]any)
 	if would == nil || out["MessageId"] != nil {
 		t.Fatalf("dry run must return WouldCall and no MessageId: %v", out)
+	}
+	if would["FromEmailAddress"] != from {
+		t.Errorf("FromEmailAddress = %v, want the display name kept: %s", would["FromEmailAddress"], from)
 	}
 	if e.configSet != "" && would["ConfigurationSetName"] != e.configSet {
 		t.Errorf("ConfigurationSetName not injected: %v", would["ConfigurationSetName"])

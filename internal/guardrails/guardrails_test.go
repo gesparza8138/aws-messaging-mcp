@@ -25,6 +25,38 @@ func TestSenderAllowed(t *testing.T) {
 	}
 }
 
+// TestSenderAllowedDisplayName covers a sender carrying a display name: only
+// the address is matched against the allow-list, and the name has its own two
+// limits.
+func TestSenderAllowedDisplayName(t *testing.T) {
+	allow := []string{"mcp@example.com"}
+	cases := []struct {
+		name, from string
+		allowed    bool
+		reason     string
+	}{
+		{"quoted name", `"Daily Report from Claude" <mcp@example.com>`, true, ""},
+		{"unquoted name", `Daily Report <MCP@example.com>`, true, ""},
+		{"angle brackets only", `<mcp@example.com>`, true, ""},
+		{"encoded non-ASCII name", `=?utf-8?q?Caf=C3=A9_Digest?= <mcp@example.com>`, true, ""},
+		{"literal non-ASCII name", `"Café Digest ☕" <mcp@example.com>`, true, ""},
+		{"64 characters", `"` + strings.Repeat("é", 64) + `" <mcp@example.com>`, true, ""},
+		{"65 characters", `"` + strings.Repeat("é", 65) + `" <mcp@example.com>`, false, "maximum is 64"},
+		{"@ in the name", `"ceo@bank.example" <mcp@example.com>`, false, "must not contain @"},
+		{"good name, bad address", `"Daily Report" <evil@example.com>`, false, "not in the allow-list"},
+		{"unparsable", `Daily Report mcp@example.com`, false, "not a valid address"},
+		{"empty", ``, false, "not a valid address"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			d := SenderAllowed(tc.from, allow)
+			if d.Allowed != tc.allowed || !strings.Contains(d.Reason, tc.reason) {
+				t.Fatalf("SenderAllowed(%q) = %+v, want allowed=%v reason containing %q", tc.from, d, tc.allowed, tc.reason)
+			}
+		})
+	}
+}
+
 func TestRecipientsAllowed(t *testing.T) {
 	if d := RecipientsAllowed([]string{"a@x.com"}, nil); !d.Allowed {
 		t.Fatal("empty list disables the check")
@@ -170,6 +202,7 @@ func TestRawEmail(t *testing.T) {
 		{"unparsable MIME", garbage, 1024, "raw_mime"},
 		{"missing From", noFrom, 1024, "sender_allow_list"},
 		{"disallowed sender", mime("evil@x.com"), 1024, "sender_allow_list"},
+		{"@ in the From display name", mime(`"ceo@bank.example" <mcp@example.com>`), 1024, "sender_allow_list"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
